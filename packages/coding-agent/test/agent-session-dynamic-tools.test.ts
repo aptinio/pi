@@ -234,6 +234,7 @@ describe("AgentSession dynamic tool registration", () => {
 						description: "Tool with separately owned presentation",
 						parameters: Type.Object({}),
 						renderShell: "default",
+						previewLines: 2,
 						renderCall: originalRenderCall,
 						renderResult: originalRenderResult,
 						execute,
@@ -242,6 +243,7 @@ describe("AgentSession dynamic tool registration", () => {
 				(pi) => {
 					pi.registerToolRenderer("presented_tool", {
 						renderShell: "self",
+						previewLines: 3,
 						renderCall: replacementRenderCall,
 					});
 					pi.registerToolRenderer("delayed_tool", { renderCall: delayedRenderCall });
@@ -277,6 +279,7 @@ describe("AgentSession dynamic tool registration", () => {
 		const definition = session.getToolDefinition("presented_tool");
 		expect(definition?.execute).toBe(execute);
 		expect(definition?.renderShell).toBe("self");
+		expect(definition?.previewLines).toBe(3);
 		expect(definition?.renderCall).toBe(replacementRenderCall);
 		expect(definition?.renderResult).toBe(originalRenderResult);
 		expect(session.getToolDefinition("not_registered")).toBeUndefined();

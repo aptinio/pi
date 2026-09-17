@@ -179,17 +179,20 @@ pi.on("tool_call", async (event, ctx) => {
 
 A tool that orchestrates other tools can adjust what the model sees while it is active with `prepareLoadout(loadout)`. It runs whenever the active tools change and receives the declared tools, the callable tools, and every registered tool with its exposure and namespace. It returns replacement `descriptions` for declared tools (including its own) and `hiddenDeclarations`: active tools whose declarations requests leave out while they stay active and callable. `codemode` uses only this hook, `exposure`, and `ctx.executeTool()`, so another tool can implement the same behavior under a different name.
 
-Use `pi.registerToolRenderer(toolName, renderer)` to override a tool's interactive TUI presentation without replacing its execution definition. HTML export also uses the renderer for custom tools; built-in tools with dedicated export templates retain those templates. The renderer may provide `renderCall`, `renderResult`, or `renderShell`; omitted fields continue to use the tool's own presentation.
+Use `pi.registerToolRenderer(toolName, renderer)` to override a tool's interactive TUI presentation without replacing its execution definition. HTML export also uses the renderer for custom tools; built-in tools with dedicated export templates retain those templates. The renderer may provide `renderCall`, `renderResult`, `renderShell`, or `previewLines`; omitted fields continue to use the tool's own presentation.
 
 ```typescript
 import { Text } from "@earendil-works/pi-tui";
 
 pi.registerToolRenderer("bash", {
+  previewLines: 5,
   renderCall(args, theme) {
     return new Text(theme.fg("toolTitle", `bash ${args.command}`), 0, 0);
   },
 });
 ```
+
+A positive integer `previewLines` value opts the row into a three-state click cycle: collapsed, a bounded preview of the normal expanded renderer, then full output. `context.expanded` is true for both preview and full output; `context.preview` identifies the bounded preview so a self-rendered shell can keep decorative chrome outside the native line budget. `Ctrl+O` continues to switch all rows directly between collapsed and full output. Preview clipping affects only interactive TUI rendering.
 
 The first loaded extension that registers a renderer for a tool name wins. A renderer may be registered before its tool exists and takes effect when that tool is later registered. Registering a renderer does not change the tool's `execute` function, parameter schema, prompt metadata, or active state.
 

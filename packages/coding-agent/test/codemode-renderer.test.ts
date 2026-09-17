@@ -24,6 +24,7 @@ function render(
 		argsComplete: true,
 		isPartial: false,
 		expanded,
+		preview: false,
 		showImages: false,
 		isError,
 	} satisfies ToolRenderContext;
