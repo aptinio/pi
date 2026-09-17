@@ -97,7 +97,7 @@ The dedicated history actions browse prompt history regardless of cursor positio
 
 #### Fullscreen
 
-In fullscreen mode, these actions control the transcript and take precedence over editor actions using the same key.
+In fullscreen mode, these actions control the transcript and take precedence over editor actions using the same key. Dragging with the primary mouse button selects and keeps text highlighted. Automatic copy silently writes the Linux primary selection or the clipboard on other platforms; `app.message.copy` explicitly copies the active selection to the system clipboard and confirms success.
 
 | Keybinding id | Default | Description |
 |---|---|---|
@@ -161,7 +161,7 @@ On native Windows, `app.suspend` has no default because Windows terminals do not
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
 | `app.tools.expand` | `ctrl+o` | Collapse or expand tool output |
-| `app.message.copy` | `ctrl+x` | Copy the selected message in `/tree`; in fullscreen mode, copy the active selection when `fullscreenCopyOnSelect` is `false`; otherwise copy the last assistant message. On OAuth sign-in screens, copy the sign-in URL |
+| `app.message.copy` | `ctrl+x` | Copy the selected message in `/tree`; otherwise copy the active fullscreen selection when present, or the last assistant message. On OAuth sign-in screens, copy the sign-in URL |
 | `app.message.followUp` | `alt+enter` (`ctrl+q` on Windows and WSL) | Queue follow-up message |
 | `app.message.dequeue` | `alt+up` (`alt+q` on Windows and WSL) | Restore queued messages to editor |
 
