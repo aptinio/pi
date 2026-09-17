@@ -1,5 +1,12 @@
 import { join, resolve } from "node:path";
-import { resetCapabilitiesCache, setCapabilities, Text, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import {
+	resetCapabilitiesCache,
+	setCapabilities,
+	Text,
+	type TUI,
+	type TuiMouseEvent,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 
@@ -34,6 +41,23 @@ function createFakeTui(): TUI {
 	return {
 		requestRender: () => {},
 	} as unknown as TUI;
+}
+
+function createMouseEvent(type: TuiMouseEvent["type"], y: number, width: number, height: number): TuiMouseEvent {
+	return {
+		type,
+		button: "left",
+		x: 2,
+		y,
+		screenX: 2,
+		screenY: y,
+		width,
+		height,
+		shift: false,
+		alt: false,
+		ctrl: false,
+		clickCount: type === "click" ? 1 : undefined,
+	};
 }
 
 describe("ToolExecutionComponent parity", () => {
@@ -551,6 +575,224 @@ describe("ToolExecutionComponent parity", () => {
 		};
 		expect(component.handleMouse(event)?.handled).toBe(true);
 		expect(stripAnsi(component.render(width).join("\n"))).toContain("hidden content");
+	});
+
+	test("cycles opted-in tool rows through compact, preview, and full output", () => {
+		const renderContexts: Array<{ expanded: boolean; preview: boolean }> = [];
+		const toolDefinition: ToolDefinition = {
+			...createBaseToolDefinition(),
+			renderShell: "self",
+			previewLines: 3,
+			renderCall: (_args, _theme, context) => {
+				renderContexts.push({ expanded: context.expanded, preview: context.preview });
+				return new Text(
+					context.expanded
+						? Array.from({ length: 7 }, (_, index) => `native-${index + 1}`).join("\n")
+						: "compact summary",
+					0,
+					0,
+				);
+			},
+			renderResult: () => new Text("", 0, 0),
+		};
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-click-preview",
+			{},
+			{},
+			toolDefinition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult({ content: [{ type: "text", text: "done" }], details: {}, isError: false }, false);
+
+		const width = 120;
+		expect(stripAnsi(component.render(width).join("\n"))).toContain("compact summary");
+
+		const click = (y: number, height: number): void => {
+			const event: TuiMouseEvent = {
+				type: "click",
+				button: "left",
+				x: 2,
+				y,
+				screenX: 2,
+				screenY: y,
+				width,
+				height,
+				shift: false,
+				alt: false,
+				ctrl: false,
+				clickCount: 1,
+			};
+			expect(component.handleMouse(event)?.handled).toBe(true);
+		};
+
+		let lines = component.render(width);
+		click(1, lines.length);
+		lines = component.render(width);
+		const preview = stripAnsi(lines.join("\n"));
+		expect(renderContexts.at(-1)).toEqual({ expanded: true, preview: true });
+		expect(preview).toContain("native-3");
+		expect(preview).not.toContain("native-4");
+		expect(preview).toContain("4 more lines");
+
+		click(lines.length - 1, lines.length);
+		lines = component.render(width);
+		const expanded = stripAnsi(lines.join("\n"));
+		expect(renderContexts.at(-1)).toEqual({ expanded: true, preview: false });
+		expect(expanded).toContain("native-7");
+		expect(expanded).not.toContain("more lines");
+
+		click(1, lines.length);
+		expect(stripAnsi(component.render(width).join("\n"))).toContain("compact summary");
+
+		component.setExpanded(true);
+		expect(stripAnsi(component.render(width).join("\n"))).toContain("native-7");
+		component.setExpanded(false);
+		expect(stripAnsi(component.render(width).join("\n"))).toContain("compact summary");
+
+		lines = component.render(width);
+		click(1, lines.length);
+		expect(stripAnsi(component.render(width).join("\n"))).toContain("4 more lines");
+		component.setExpanded(true);
+		expect(stripAnsi(component.render(width).join("\n"))).toContain("native-7");
+		component.setExpanded(false);
+		expect(stripAnsi(component.render(width).join("\n"))).toContain("compact summary");
+	});
+
+	test("treats fractional preview line counts as invalid", () => {
+		const toolDefinition: ToolDefinition = {
+			...createBaseToolDefinition(),
+			renderShell: "self",
+			previewLines: 1.5,
+			renderCall: (_args, _theme, context) =>
+				new Text(context.expanded ? "native-1\nnative-2\nnative-3" : "compact summary", 0, 0),
+			renderResult: () => new Text("", 0, 0),
+		};
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-invalid-preview",
+			{},
+			{},
+			toolDefinition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult({ content: [{ type: "text", text: "done" }], details: {}, isError: false }, false);
+
+		const width = 120;
+		const lines = component.render(width);
+		expect(component.handleMouse(createMouseEvent("click", 1, width, lines.length))?.handled).toBe(true);
+		const expanded = stripAnsi(component.render(width).join("\n"));
+		expect(expanded).toContain("native-3");
+		expect(expanded).not.toContain("more lines");
+	});
+
+	test("counts default-shell native content lines without clipping shell padding", () => {
+		const toolDefinition: ToolDefinition = {
+			...createBaseToolDefinition(),
+			previewLines: 3,
+			renderCall: (_args, _theme, context) =>
+				new Text(
+					context.expanded
+						? Array.from({ length: 7 }, (_, index) => `default-native-${index + 1}`).join("\n")
+						: "default compact summary",
+					0,
+					0,
+				),
+			renderResult: () => new Text("", 0, 0),
+		};
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-default-preview",
+			{},
+			{},
+			toolDefinition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult({ content: [{ type: "text", text: "done" }], details: {}, isError: false }, false);
+
+		const width = 120;
+		let lines = component.render(width);
+		const compactRow = lines.findIndex((line) => stripAnsi(line).includes("default compact summary"));
+		expect(compactRow).toBeGreaterThanOrEqual(0);
+		expect(component.handleMouse(createMouseEvent("click", compactRow, width, lines.length))?.handled).toBe(true);
+
+		lines = component.render(width);
+		const preview = stripAnsi(lines.join("\n"));
+		expect(preview).toContain("default-native-3");
+		expect(preview).not.toContain("default-native-4");
+		expect(preview).toContain("4 more lines");
+
+		const markerRow = lines.findIndex((line) => stripAnsi(line).includes("4 more lines"));
+		expect(markerRow).toBeGreaterThanOrEqual(0);
+		expect(stripAnsi(lines[markerRow] ?? "")).toMatch(/^ \.\.\./);
+		expect(visibleWidth(lines[markerRow] ?? "")).toBe(width);
+		expect(component.handleMouse(createMouseEvent("click", markerRow, width, lines.length))?.handled).toBe(true);
+		expect(stripAnsi(component.render(width).join("\n"))).toContain("default-native-7");
+
+		const narrowWidth = 19;
+		component.setExpanded(false);
+		lines = component.render(narrowWidth);
+		const narrowCompactRow = lines.findIndex((line) => stripAnsi(line).includes("default compact"));
+		expect(narrowCompactRow).toBeGreaterThanOrEqual(0);
+		expect(
+			component.handleMouse(createMouseEvent("click", narrowCompactRow, narrowWidth, lines.length))?.handled,
+		).toBe(true);
+		lines = component.render(narrowWidth);
+		const narrowMarker = lines.find((line) => stripAnsi(line).includes("more line"));
+		expect(narrowMarker).toBeDefined();
+		expect(narrowMarker).not.toContain("\x1b[0m");
+		expect(visibleWidth(narrowMarker ?? "")).toBe(narrowWidth);
+	});
+
+	test("does not dispatch preview-marker events to hidden self-shell content", () => {
+		const hiddenEvents: Array<{ type: string; y: number }> = [];
+		const hiddenAwareComponent = {
+			render: () => Array.from({ length: 7 }, (_, index) => `hidden-aware-${index + 1}`),
+			handleMouse: (event: TuiMouseEvent) => {
+				hiddenEvents.push({ type: event.type, y: event.y });
+				return { handled: true, capture: true };
+			},
+			invalidate: () => {},
+		};
+		const toolDefinition: ToolDefinition = {
+			...createBaseToolDefinition(),
+			renderShell: "self",
+			previewLines: 3,
+			renderCall: (_args, _theme, context) =>
+				context.expanded ? hiddenAwareComponent : new Text("compact summary", 0, 0),
+			renderResult: () => new Text("", 0, 0),
+		};
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-hidden-marker",
+			{},
+			{},
+			toolDefinition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult({ content: [{ type: "text", text: "done" }], details: {}, isError: false }, false);
+
+		const width = 120;
+		let lines = component.render(width);
+		expect(component.handleMouse(createMouseEvent("click", 1, width, lines.length))?.handled).toBe(true);
+		lines = component.render(width);
+		const markerRow = lines.findIndex((line) => stripAnsi(line).includes("4 more lines"));
+		expect(markerRow).toBeGreaterThanOrEqual(0);
+		const expectedMarker = theme.bg(
+			"toolSuccessBg",
+			theme.fg("muted", "... (4 more lines)") + " ".repeat(width - "... (4 more lines)".length),
+		);
+		expect(lines[markerRow]).toBe(expectedMarker);
+		expect(visibleWidth(lines[markerRow] ?? "")).toBe(width);
+		expect(component.handleMouse(createMouseEvent("press", markerRow, width, lines.length))).toBeUndefined();
+		expect(hiddenEvents).toEqual([]);
+		expect(component.handleMouse(createMouseEvent("click", markerRow, width, lines.length))?.handled).toBe(true);
+		expect(hiddenEvents).toEqual([]);
+		expect(stripAnsi(component.render(width).join("\n"))).toContain("hidden-aware-7");
 	});
 
 	test("collapses ordinary read results until expanded", () => {

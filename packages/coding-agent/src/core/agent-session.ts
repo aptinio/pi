@@ -1276,6 +1276,7 @@ export class AgentSession {
 		return {
 			...definition,
 			renderShell: renderer.renderShell ?? definition.renderShell,
+			previewLines: renderer.previewLines ?? definition.previewLines,
 			renderCall: renderer.renderCall ?? definition.renderCall,
 			renderResult: renderer.renderResult ?? definition.renderResult,
 		};

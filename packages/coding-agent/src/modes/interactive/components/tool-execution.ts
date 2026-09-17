@@ -10,6 +10,7 @@ import {
 	Text,
 	type TUI,
 	type TuiMouseEvent,
+	visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { ToolDefinition, ToolRenderContext, ToolRenderResultOptions } from "../../../core/extensions/types.ts";
 import type { Theme } from "../theme/theme.ts";
@@ -23,6 +24,7 @@ import type { Theme } from "../theme/theme.ts";
  */
 export interface ToolRenderers {
 	renderShell?: "default" | "self";
+	previewLines?: number;
 	renderCall?: (args: any, theme: Theme, context: ToolRenderContext<any, any>) => Component;
 	renderResult?: (
 		result: AgentToolResult<any>,
@@ -39,6 +41,67 @@ import { keyHint } from "./keybinding-hints.ts";
 
 const FALLBACK_PREVIEW_LINES = 10;
 
+type ToolExpansionState = "collapsed" | "preview" | "expanded";
+
+function limitPreviewLines(
+	lines: string[],
+	limit: number | undefined,
+	width: number,
+	markerBackground?: (text: string) => string,
+): string[] {
+	if (limit === undefined || lines.length <= limit) return lines;
+	const remaining = lines.length - limit;
+	const marker = `... (${remaining} more ${remaining === 1 ? "line" : "lines"})`.slice(0, Math.max(0, width));
+	const styledMarker = theme.fg("muted", marker);
+	const markerLine = markerBackground
+		? markerBackground(styledMarker + " ".repeat(Math.max(0, width - visibleWidth(styledMarker))))
+		: styledMarker;
+	return [...lines.slice(0, limit), markerLine];
+}
+
+class LinePreview implements Component {
+	private readonly child: Component;
+	private childHeight = 0;
+	private readonly getLimit: () => number | undefined;
+	private markerVisible = false;
+	private readonly onMarkerClick: (event: TuiMouseEvent) => { handled: true } | undefined;
+	private renderedWidth = 0;
+
+	constructor(
+		child: Component,
+		getLimit: () => number | undefined,
+		onMarkerClick: (event: TuiMouseEvent) => { handled: true } | undefined,
+	) {
+		this.child = child;
+		this.getLimit = getLimit;
+		this.onMarkerClick = onMarkerClick;
+	}
+
+	render(width: number): string[] {
+		const lines = this.child.render(width);
+		const limit = this.getLimit();
+		this.childHeight = lines.length;
+		this.renderedWidth = width;
+		this.markerVisible = limit !== undefined && lines.length > limit;
+		return limitPreviewLines(lines, limit, width);
+	}
+
+	handleMouse(event: TuiMouseEvent) {
+		if (this.renderedWidth !== event.width) this.render(event.width);
+		const limit = this.getLimit();
+		const visibleChildHeight = limit === undefined ? this.childHeight : Math.min(this.childHeight, limit);
+		if (event.y < visibleChildHeight) {
+			return this.child.handleMouse?.({ ...event, height: this.childHeight });
+		}
+		if (this.markerVisible && event.y === visibleChildHeight) return this.onMarkerClick(event);
+		return undefined;
+	}
+
+	invalidate(): void {
+		this.child.invalidate();
+	}
+}
+
 export interface ToolExecutionOptions {
 	showImages?: boolean;
 	imageWidthCells?: number;
@@ -48,8 +111,10 @@ export class ToolExecutionComponent extends Container {
 	private contentBox: Box;
 	private contentText: Text;
 	private contentTextRegion: MouseRegion;
+	private defaultRenderContainer: Container;
 	private selfRenderContainer: Container;
 	private selfRenderHeight = 0;
+	private selfRenderFullHeight = 0;
 	private callRendererComponent?: Component;
 	private resultRendererComponent?: Component;
 	private rendererState: any = {};
@@ -58,7 +123,7 @@ export class ToolExecutionComponent extends Container {
 	private toolName: string;
 	private toolCallId: string;
 	private args: any;
-	private expanded = false;
+	private expansionState: ToolExpansionState = "collapsed";
 	private showImages: boolean;
 	private imageWidthCells: number;
 	private isPartial = true;
@@ -105,12 +170,26 @@ export class ToolExecutionComponent extends Container {
 		this.contentBox = new Box(1, 1, (text: string) => theme.bg("toolPendingBg", text));
 		this.contentText = new Text("", 1, 1, (text: string) => theme.bg("toolPendingBg", text));
 		this.contentTextRegion = this.createResultRegion(this.contentText);
+		this.defaultRenderContainer = new Container();
+		this.contentBox.addChild(
+			new LinePreview(
+				this.defaultRenderContainer,
+				() => this.getPreviewLineLimit(),
+				(event) => this.handleExpansionClick(event),
+			),
+		);
 		this.selfRenderContainer = new Container();
 
 		if (this.hasRendererDefinition()) {
 			this.addChild(this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox);
 		} else {
-			this.addChild(this.contentTextRegion);
+			this.addChild(
+				new LinePreview(
+					this.contentTextRegion,
+					() => this.getPreviewLineLimit(),
+					(event) => this.handleExpansionClick(event),
+				),
+			);
 		}
 
 		this.updateDisplay();
@@ -146,7 +225,8 @@ export class ToolExecutionComponent extends Container {
 			executionStarted: this.executionStarted,
 			argsComplete: this.argsComplete,
 			isPartial: this.isPartial,
-			expanded: this.expanded,
+			expanded: this.expansionState !== "collapsed",
+			preview: this.expansionState === "preview",
 			showImages: this.showImages,
 			isError: this.result?.isError ?? false,
 		};
@@ -163,7 +243,7 @@ export class ToolExecutionComponent extends Container {
 		}
 
 		const lines = output.split("\n");
-		const displayLines = this.expanded ? lines : lines.slice(0, FALLBACK_PREVIEW_LINES);
+		const displayLines = this.expansionState !== "collapsed" ? lines : lines.slice(0, FALLBACK_PREVIEW_LINES);
 		const remaining = lines.length - displayLines.length;
 		let text = displayLines.map((line) => theme.fg("toolOutput", line)).join("\n");
 		if (remaining > 0) {
@@ -173,11 +253,33 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private createResultRegion(component: Component): MouseRegion {
-		return new MouseRegion(component, (event) => {
-			if (!this.result || event.type !== "click" || event.button !== "left") return undefined;
-			this.setExpanded(!this.expanded);
-			return { handled: true };
-		});
+		return new MouseRegion(component, (event) => this.handleExpansionClick(event));
+	}
+
+	private handleExpansionClick(event: TuiMouseEvent): { handled: true } | undefined {
+		if (!this.result || event.type !== "click" || event.button !== "left") return undefined;
+		const previewLines = this.getConfiguredPreviewLines();
+		if (previewLines === undefined) {
+			this.expansionState = this.expansionState === "collapsed" ? "expanded" : "collapsed";
+		} else if (this.expansionState === "collapsed") {
+			this.expansionState = "preview";
+		} else if (this.expansionState === "preview") {
+			this.expansionState = "expanded";
+		} else {
+			this.expansionState = "collapsed";
+		}
+		this.updateDisplay();
+		return { handled: true };
+	}
+
+	private getConfiguredPreviewLines(): number | undefined {
+		const previewLines = this.toolDefinition?.previewLines;
+		if (previewLines === undefined || !Number.isInteger(previewLines) || previewLines < 1) return undefined;
+		return previewLines;
+	}
+
+	private getPreviewLineLimit(): number | undefined {
+		return this.expansionState === "preview" ? this.getConfiguredPreviewLines() : undefined;
 	}
 
 	updateArgs(args: any): void {
@@ -242,7 +344,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	setExpanded(expanded: boolean): void {
-		this.expanded = expanded;
+		this.expansionState = expanded ? "expanded" : "collapsed";
 		this.updateDisplay();
 	}
 
@@ -267,7 +369,14 @@ export class ToolExecutionComponent extends Container {
 		}
 
 		if (this.hasRendererDefinition() && this.getRenderShell() === "self") {
-			const contentLines = this.selfRenderContainer.render(width);
+			const fullContentLines = this.selfRenderContainer.render(width);
+			const contentLines = limitPreviewLines(
+				fullContentLines,
+				this.getPreviewLineLimit(),
+				width,
+				this.getToolBackground(),
+			);
+			this.selfRenderFullHeight = fullContentLines.length;
 			this.selfRenderHeight = contentLines.length;
 			if (contentLines.length === 0 && this.imageComponents.length === 0) {
 				return [];
@@ -297,27 +406,48 @@ export class ToolExecutionComponent extends Container {
 	override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
 		if (!this.hasRendererDefinition() || this.getRenderShell() !== "self") return super.handleMouse(event);
 		if (event.y <= 0 || event.y > this.selfRenderHeight) return undefined;
+		const contentY = event.y - 1;
+		const previewLimit = this.getPreviewLineLimit();
+		if (previewLimit !== undefined && this.selfRenderFullHeight > previewLimit && contentY === previewLimit) {
+			const result = this.handleExpansionClick(event);
+			if (result) {
+				return {
+					...result,
+					target: {
+						component: this,
+						originX: event.screenX - event.x,
+						originY: event.screenY - event.y,
+						width: event.width,
+						height: event.height,
+					},
+				};
+			}
+			return undefined;
+		}
 		return this.selfRenderContainer.handleMouse({
 			...event,
-			y: event.y - 1,
-			height: this.selfRenderHeight,
+			y: contentY,
+			height: this.selfRenderFullHeight,
 		});
 	}
 
-	private updateDisplay(): void {
-		const bgFn = this.isPartial
+	private getToolBackground(): (text: string) => string {
+		return this.isPartial
 			? (text: string) => theme.bg("toolPendingBg", text)
 			: this.result?.isError
 				? (text: string) => theme.bg("toolErrorBg", text)
 				: (text: string) => theme.bg("toolSuccessBg", text);
+	}
+
+	private updateDisplay(): void {
+		const bgFn = this.getToolBackground();
 
 		let hasContent = false;
 		this.hideComponent = false;
 		if (this.hasRendererDefinition()) {
-			const renderContainer = this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox;
-			if (renderContainer instanceof Box) {
-				renderContainer.setBgFn(bgFn);
-			}
+			const renderContainer =
+				this.getRenderShell() === "self" ? this.selfRenderContainer : this.defaultRenderContainer;
+			if (this.getRenderShell() === "default") this.contentBox.setBgFn(bgFn);
 			renderContainer.clear();
 
 			const callRenderer = this.getCallRenderer();
@@ -349,7 +479,7 @@ export class ToolExecutionComponent extends Container {
 					try {
 						const component = resultRenderer(
 							{ content: this.result.content as any, details: this.result.details },
-							{ expanded: this.expanded, isPartial: this.isPartial },
+							{ expanded: this.expansionState !== "collapsed", isPartial: this.isPartial },
 							theme,
 							this.getRenderContext(this.resultRendererComponent),
 						);

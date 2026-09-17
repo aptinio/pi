@@ -415,7 +415,7 @@ export interface ReplacedSessionContext extends ExtensionCommandContext {
 
 /** Rendering options for tool results */
 export interface ToolRenderResultOptions {
-	/** Whether the result view is expanded */
+	/** Whether the result view is in preview or fully expanded mode. */
 	expanded: boolean;
 	/** Whether this is a partial/streaming result */
 	isPartial: boolean;
@@ -441,8 +441,10 @@ export interface ToolRenderContext<TState = any, TArgs = any> {
 	argsComplete: boolean;
 	/** Whether the tool result is partial/streaming. */
 	isPartial: boolean;
-	/** Whether the result view is expanded. */
+	/** Whether the result view is in preview or fully expanded mode. */
 	expanded: boolean;
+	/** Whether the result view is specifically in bounded preview mode. */
+	preview: boolean;
 	/** Whether inline images are currently shown in the TUI. */
 	showImages: boolean;
 	/** Whether the current result is an error. */
@@ -469,6 +471,8 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	constrainedSampling?: false | ConstrainedSamplingConfig;
 	/** Controls whether ToolExecutionComponent renders the standard colored shell or the tool renders its own framing. */
 	renderShell?: "default" | "self";
+	/** Opt into a click-accessible preview state showing at most this many rendered lines. Must be a positive integer. */
+	previewLines?: number;
 
 	/** Optional compatibility shim to prepare raw tool call arguments before schema validation. Must return an object conforming to TParams. */
 	prepareArguments?: (args: unknown) => Static<TParams>;
@@ -505,7 +509,7 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 
 export type ToolRenderer<TParams extends TSchema = TSchema, TDetails = unknown, TState = any> = Pick<
 	ToolDefinition<TParams, TDetails, TState>,
-	"renderShell" | "renderCall" | "renderResult"
+	"renderShell" | "previewLines" | "renderCall" | "renderResult"
 >;
 
 type AnyToolDefinition = ToolDefinition<any, any, any>;
