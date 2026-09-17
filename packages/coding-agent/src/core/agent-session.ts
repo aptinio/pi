@@ -1267,7 +1267,18 @@ export class AgentSession {
 	}
 
 	getToolDefinition(name: string): ToolDefinition | undefined {
-		return this._toolDefinitions.get(name)?.definition;
+		const definition = this._toolDefinitions.get(name)?.definition;
+		if (!definition) return undefined;
+
+		const renderer = this._extensionRunner.getToolRenderer(name);
+		if (!renderer) return definition;
+
+		return {
+			...definition,
+			renderShell: renderer.renderShell ?? definition.renderShell,
+			renderCall: renderer.renderCall ?? definition.renderCall,
+			renderResult: renderer.renderResult ?? definition.renderResult,
+		};
 	}
 
 	/**

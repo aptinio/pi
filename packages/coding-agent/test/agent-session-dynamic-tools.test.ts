@@ -2,8 +2,9 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -204,6 +205,94 @@ describe("AgentSession dynamic tool registration", () => {
 			origin: "top-level",
 		});
 		expect(session.getActiveToolNames()).toContain("sdk_tool");
+
+		session.dispose();
+	});
+
+	it("overrides presentation without replacing the tool definition's execution behavior", async () => {
+		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		const sessionManager = SessionManager.inMemory();
+		const execute = vi.fn(async () => ({
+			content: [{ type: "text" as const, text: "original execution" }],
+			details: { source: "original" },
+		}));
+		const originalRenderCall = () => new Text("original call", 0, 0);
+		const originalRenderResult = () => new Text("original result", 0, 0);
+		const replacementRenderCall = () => new Text("replacement call", 0, 0);
+		const delayedRenderCall = () => new Text("delayed call", 0, 0);
+		let replacePresentation: (() => void) | undefined;
+
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: tempDir,
+			agentDir,
+			settingsManager,
+			extensionFactories: [
+				(pi) => {
+					pi.registerTool({
+						name: "presented_tool",
+						label: "Presented Tool",
+						description: "Tool with separately owned presentation",
+						parameters: Type.Object({}),
+						renderShell: "default",
+						renderCall: originalRenderCall,
+						renderResult: originalRenderResult,
+						execute,
+					});
+				},
+				(pi) => {
+					pi.registerToolRenderer("presented_tool", {
+						renderShell: "self",
+						renderCall: replacementRenderCall,
+					});
+					pi.registerToolRenderer("delayed_tool", { renderCall: delayedRenderCall });
+					pi.registerToolRenderer("not_registered", { renderShell: "self" });
+					replacePresentation = () => pi.registerToolRenderer("presented_tool", { renderShell: "default" });
+					pi.on("session_start", () => {
+						pi.registerTool({
+							name: "delayed_tool",
+							label: "Delayed Tool",
+							description: "Registered after its renderer",
+							parameters: Type.Object({}),
+							execute: async () => ({ content: [{ type: "text", text: "delayed" }], details: undefined }),
+						});
+					});
+				},
+			],
+		});
+		await resourceLoader.reload();
+
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir,
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			settingsManager,
+			sessionManager,
+			resourceLoader,
+		});
+
+		expect(session.extensionRunner.getToolRenderer("delayed_tool")?.renderCall).toBe(delayedRenderCall);
+		expect(session.getToolDefinition("delayed_tool")).toBeUndefined();
+		await session.bindExtensions({});
+
+		const definition = session.getToolDefinition("presented_tool");
+		expect(definition?.execute).toBe(execute);
+		expect(definition?.renderShell).toBe("self");
+		expect(definition?.renderCall).toBe(replacementRenderCall);
+		expect(definition?.renderResult).toBe(originalRenderResult);
+		expect(session.getToolDefinition("not_registered")).toBeUndefined();
+		expect(session.getToolDefinition("delayed_tool")?.renderCall).toBe(delayedRenderCall);
+
+		const activeTool = session.agent.state.tools.find((tool) => tool.name === "presented_tool");
+		const result = await activeTool?.execute("call-1", {}, undefined, undefined);
+		expect(result).toMatchObject({
+			content: [{ type: "text", text: "original execution" }],
+			details: { source: "original" },
+		});
+		expect(execute).toHaveBeenCalledOnce();
+
+		replacePresentation?.();
+		expect(session.agent.state.tools.find((tool) => tool.name === "presented_tool")).toBe(activeTool);
+		expect(session.getToolDefinition("presented_tool")?.renderShell).toBe("default");
 
 		session.dispose();
 	});

@@ -79,6 +79,7 @@ import type {
 	SessionShutdownEvent,
 	ToolCallEvent,
 	ToolCallEventResult,
+	ToolRenderer,
 	ToolResultEvent,
 	ToolResultEventResult,
 	TurnEndEvent,
@@ -602,6 +603,16 @@ export class ExtensionRunner {
 			const tool = ext.tools.get(toolName);
 			if (tool) {
 				return tool.definition;
+			}
+		}
+		return undefined;
+	}
+
+	getToolRenderer(toolName: string): ToolRenderer | undefined {
+		for (const ext of this.extensions) {
+			const renderer = ext.toolRenderers?.get(toolName);
+			if (renderer) {
+				return renderer;
 			}
 		}
 		return undefined;

@@ -1516,6 +1516,22 @@ pi.registerTool({
 });
 ```
 
+### pi.registerToolRenderer(toolName, renderer)
+
+Override a tool's interactive TUI presentation without replacing its execution definition. HTML export also uses the renderer for custom tools; built-in tools with dedicated export templates retain those templates. The renderer may provide `renderCall`, `renderResult`, or `renderShell`; omitted fields continue to use the tool's own presentation.
+
+```typescript
+import { Text } from "@earendil-works/pi-tui";
+
+pi.registerToolRenderer("bash", {
+  renderCall(args, theme) {
+    return new Text(theme.fg("toolTitle", `bash ${args.command}`), 0, 0);
+  },
+});
+```
+
+The first loaded extension that registers a renderer for a tool name wins. A renderer may be registered before its tool exists and takes effect when that tool is later registered. Registering a renderer does not change the tool's `execute` function, parameter schema, prompt metadata, or active state.
+
 ### pi.sendMessage(message, options?)
 
 Inject a custom message into the session. Custom messages participate in LLM context. For durable TUI-only content that should not be sent to the LLM, use [`pi.appendEntry()`](#piappendentrycustomtype-data) with [`pi.registerEntryRenderer()`](#piregisterentryrenderercustomtype-renderer).

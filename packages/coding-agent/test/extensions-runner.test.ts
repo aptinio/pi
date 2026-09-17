@@ -752,6 +752,31 @@ describe("ExtensionRunner", () => {
 			expect(runner.getEntryRenderer("my-entry")).toBeDefined();
 			expect(runner.getEntryRenderer("not-exists")).toBeUndefined();
 		});
+
+		it("gets the first tool renderer registered for a tool name", async () => {
+			const first = `
+				export default function(pi) {
+					pi.registerToolRenderer("custom-tool", { renderShell: "self" });
+				}
+			`;
+			const second = `
+				export default function(pi) {
+					pi.registerToolRenderer("custom-tool", { renderShell: "default" });
+					pi.registerToolRenderer("second-only-tool", { renderShell: "self" });
+				}
+			`;
+			const firstPath = path.join(extensionsDir, "z-first-tool-renderer.ts");
+			const secondPath = path.join(extensionsDir, "a-second-tool-renderer.ts");
+			fs.writeFileSync(firstPath, first);
+			fs.writeFileSync(secondPath, second);
+
+			const result = await loadExtensions([firstPath, secondPath], tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+
+			expect(runner.getToolRenderer("custom-tool")?.renderShell).toBe("self");
+			expect(runner.getToolRenderer("second-only-tool")?.renderShell).toBe("self");
+			expect(runner.getToolRenderer("not-exists")).toBeUndefined();
+		});
 	});
 
 	describe("flags", () => {
