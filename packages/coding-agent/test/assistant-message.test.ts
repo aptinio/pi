@@ -119,7 +119,7 @@ describe("AssistantMessageComponent", () => {
 			ctrl: false,
 			clickCount: 1,
 		};
-		expect(component.handleMouse(event)?.handled).toBe(true);
+		expect(component.handleMouse(event)).toMatchObject({ handled: true, preserveViewport: true });
 
 		const collapsed = stripAnsi(component.render(width).join("\n"));
 		expect(collapsed).not.toContain("first reasoning");
