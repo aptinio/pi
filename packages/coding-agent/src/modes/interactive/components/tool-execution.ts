@@ -163,7 +163,7 @@ export class ToolExecutionComponent extends Container {
 		return new MouseRegion(component, (event) => {
 			if (!this.result || event.type !== "click" || event.button !== "left") return undefined;
 			this.setExpanded(!this.expanded);
-			return { handled: true };
+			return { handled: true, preserveViewport: true };
 		});
 	}
 
