@@ -71,6 +71,49 @@ export async function readClipboardText(): Promise<string | null> {
 	}
 }
 
+/** Read plain text from the Linux primary selection without falling back to the regular clipboard. */
+export async function readPrimarySelectionText(): Promise<string | null> {
+	if (platform() !== "linux") return null;
+
+	const commands: [string, string[]][] = [];
+	if (process.env.WAYLAND_DISPLAY) {
+		commands.push(["wl-paste", ["--primary", "--no-newline", "--type", "text"]]);
+	}
+	if (process.env.DISPLAY) {
+		commands.push(["xclip", ["-selection", "primary", "-out"]], ["xsel", ["--primary", "--output"]]);
+	}
+	for (const [command, args] of commands) {
+		const bytes = await runClipboardCommand(command, args, { timeoutMs: 5000 });
+		if (bytes !== undefined) return bytes.toString("utf8") || null;
+	}
+	return null;
+}
+
+/** Copy plain text to the platform primary selection, or the clipboard where no primary selection exists. */
+export async function copyToPrimarySelection(text: string): Promise<void> {
+	if (platform() !== "linux") {
+		await copyToClipboard(text);
+		return;
+	}
+
+	const commands: [string, string[]][] = [];
+	if (process.env.WAYLAND_DISPLAY) commands.push(["wl-copy", ["--primary"]]);
+	if (process.env.DISPLAY) {
+		commands.push(["xclip", ["-selection", "primary"]], ["xsel", ["--primary", "--input"]]);
+	}
+	for (const [command, args] of commands) {
+		if ((await runClipboardCommand(command, args, { input: text, timeoutMs: 5000 })) !== undefined) return;
+	}
+
+	if (process.env.WAYLAND_DISPLAY) {
+		throw new Error("Primary selection unavailable: install `wl-clipboard` (`wl-copy`) or check Wayland access");
+	}
+	if (process.env.DISPLAY) {
+		throw new Error("Primary selection unavailable: install `xclip` or `xsel`, or check X11 access");
+	}
+	throw new Error("Primary selection unavailable: no Wayland or X11 display detected");
+}
+
 export async function copyToClipboard(text: string): Promise<void> {
 	const p = platform();
 	const env = process.env;

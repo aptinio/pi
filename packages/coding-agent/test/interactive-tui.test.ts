@@ -22,6 +22,7 @@ import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 const clipboardMocks = vi.hoisted(() => ({
 	copyToClipboard: vi.fn<(text: string) => Promise<void>>(),
 	readClipboardText: vi.fn<() => Promise<string | null>>(),
+	readPrimarySelectionText: vi.fn<() => Promise<string | null>>(),
 }));
 
 vi.mock("../src/utils/clipboard.ts", () => clipboardMocks);
@@ -169,16 +170,16 @@ describe("createInteractiveTui", () => {
 	});
 });
 
-describe("InteractiveMode right-click paste", () => {
-	it("feeds clipboard text to the focused component as a bracketed paste", async () => {
+describe("InteractiveMode mouse paste", () => {
+	it("feeds clipboard text to the focused component for right-click paste", async () => {
 		clipboardMocks.readClipboardText.mockResolvedValue("clipboard text");
 		const handleInput = vi.fn<(data: string) => void>();
 		const target = { render: () => [], invalidate: () => {}, handleInput } satisfies Component;
 		const requestRender = vi.fn();
-		const context = {
+		const context = Object.assign(Object.create(InteractiveMode.prototype), {
 			renderer: { getFocusedComponent: () => target },
 			ui: { requestRender },
-		};
+		});
 		const prototype = InteractiveMode.prototype as unknown as {
 			handleRightClickPaste(this: typeof context): Promise<void>;
 		};
@@ -187,6 +188,60 @@ describe("InteractiveMode right-click paste", () => {
 
 		expect(handleInput).toHaveBeenCalledWith("\x1b[200~clipboard text\x1b[201~");
 		expect(requestRender).toHaveBeenCalledOnce();
+	});
+
+	it("feeds PRIMARY text to the focused component for middle-click paste", async () => {
+		clipboardMocks.readPrimarySelectionText.mockResolvedValue("primary text");
+		const handleInput = vi.fn<(data: string) => void>();
+		const target = { render: () => [], invalidate: () => {}, handleInput } satisfies Component;
+		const requestRender = vi.fn();
+		const context = Object.assign(Object.create(InteractiveMode.prototype), {
+			renderer: { getFocusedComponent: () => target },
+			ui: { requestRender },
+		});
+		const prototype = InteractiveMode.prototype as unknown as {
+			handleMiddleClickPaste(this: typeof context): Promise<void>;
+		};
+
+		await prototype.handleMiddleClickPaste.call(context);
+
+		expect(handleInput).toHaveBeenCalledWith("\x1b[200~primary text\x1b[201~");
+		expect(requestRender).toHaveBeenCalledOnce();
+	});
+
+	it("does not paste PRIMARY text after focus changes during the read", async () => {
+		let resolvePrimary: (text: string) => void = () => {};
+		clipboardMocks.readPrimarySelectionText.mockReturnValue(
+			new Promise((resolve) => {
+				resolvePrimary = resolve;
+			}),
+		);
+		const firstHandleInput = vi.fn<(data: string) => void>();
+		const secondHandleInput = vi.fn<(data: string) => void>();
+		const firstTarget = { render: () => [], invalidate: () => {}, handleInput: firstHandleInput } satisfies Component;
+		const secondTarget = {
+			render: () => [],
+			invalidate: () => {},
+			handleInput: secondHandleInput,
+		} satisfies Component;
+		let focused: Component = firstTarget;
+		const requestRender = vi.fn();
+		const context = Object.assign(Object.create(InteractiveMode.prototype), {
+			renderer: { getFocusedComponent: () => focused },
+			ui: { requestRender },
+		});
+		const prototype = InteractiveMode.prototype as unknown as {
+			handleMiddleClickPaste(this: typeof context): Promise<void>;
+		};
+
+		const paste = prototype.handleMiddleClickPaste.call(context);
+		focused = secondTarget;
+		resolvePrimary("primary text");
+		await paste;
+
+		expect(firstHandleInput).not.toHaveBeenCalled();
+		expect(secondHandleInput).not.toHaveBeenCalled();
+		expect(requestRender).not.toHaveBeenCalled();
 	});
 });
 
@@ -254,7 +309,7 @@ describe("InteractiveMode copy confirmation", () => {
 		}
 	});
 
-	it("copies the last assistant message with an active fullscreen selection when copy-on-select is enabled", async () => {
+	it("explicitly copies an active fullscreen selection when copy-on-select is enabled", async () => {
 		const terminal = new RecordingTerminal(40, 4);
 		const ui = createInteractiveTui({
 			tuiMode: "fullscreen",
@@ -286,8 +341,8 @@ describe("InteractiveMode copy confirmation", () => {
 			await terminal.waitForRender();
 
 			expect(clipboardMocks.copyToClipboard).toHaveBeenCalledOnce();
-			expect(clipboardMocks.copyToClipboard).toHaveBeenCalledWith("assistant response");
-			expect(getLastAssistantText).toHaveBeenCalledOnce();
+			expect(clipboardMocks.copyToClipboard).toHaveBeenCalledWith("alpha\nbeta");
+			expect(getLastAssistantText).not.toHaveBeenCalled();
 			expect(showStatus).not.toHaveBeenCalled();
 			expect(showError).not.toHaveBeenCalled();
 			expect(terminal.getViewport().some((line) => line.includes("Copied!"))).toBe(true);

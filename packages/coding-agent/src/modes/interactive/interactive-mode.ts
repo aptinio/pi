@@ -117,7 +117,7 @@ import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
-import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";
+import { copyToClipboard, readClipboardText, readPrimarySelectionText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
 import { parseGitUrl } from "../../utils/git.ts";
 import { getCwdRelativePath } from "../../utils/paths.ts";
@@ -541,6 +541,9 @@ export class InteractiveMode {
 	private customHeader: (Component & { dispose?(): void }) | undefined = undefined;
 
 	private options: InteractiveModeOptions;
+	private readonly onMiddleClickPaste = (): void => {
+		void this.handleMiddleClickPaste();
+	};
 	private readonly onRightClickPaste = (): void => {
 		void this.handleRightClickPaste();
 	};
@@ -580,6 +583,7 @@ export class InteractiveMode {
 			showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
 			logDirectory: getAgentDir(),
 			terminal: options.terminal,
+			onMiddleClickPaste: this.onMiddleClickPaste,
 			onRightClickPaste: this.onRightClickPaste,
 			fullscreenCopyOnSelect: this.settingsManager.getFullscreenCopyOnSelect(),
 		});
@@ -866,6 +870,7 @@ export class InteractiveMode {
 			showHardwareCursor,
 			logDirectory: getAgentDir(),
 			terminal,
+			onMiddleClickPaste: this.onMiddleClickPaste,
 			onRightClickPaste: this.onRightClickPaste,
 			fullscreenCopyOnSelect: this.settingsManager.getFullscreenCopyOnSelect(),
 		});
@@ -3030,12 +3035,20 @@ export class InteractiveMode {
 		};
 	}
 
+	private async handleMiddleClickPaste(): Promise<void> {
+		await this.handleMousePaste(readPrimarySelectionText);
+	}
+
 	private async handleRightClickPaste(): Promise<void> {
+		await this.handleMousePaste(readClipboardText);
+	}
+
+	private async handleMousePaste(readText: () => Promise<string | null>): Promise<void> {
 		const target = this.renderer.getFocusedComponent();
 		const handleInput = target?.handleInput;
 		if (!target || !handleInput) return;
 		try {
-			const text = await readClipboardText();
+			const text = await readText();
 			if (!text || this.renderer.getFocusedComponent() !== target) return;
 			handleInput.call(target, `\x1b[200~${text}\x1b[201~`);
 			this.ui.requestRender();
@@ -6377,12 +6390,7 @@ export class InteractiveMode {
 	private async handleCopyCommand(
 		options: { flashConfirmation?: boolean; preferSelection?: boolean } = {},
 	): Promise<void> {
-		if (
-			options.preferSelection &&
-			this.ui instanceof TuiAltScreen &&
-			!this.ui.getCopyOnSelect() &&
-			this.ui.hasActiveSelection()
-		) {
+		if (options.preferSelection && this.ui instanceof TuiAltScreen && this.ui.hasActiveSelection()) {
 			await this.ui.copyActiveSelectionToClipboard();
 			return;
 		}

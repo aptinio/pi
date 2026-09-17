@@ -1,6 +1,6 @@
 import type { Terminal } from "@earendil-works/pi-tui";
 import { ProcessTerminal, type TUI, TuiAltScreen, TuiMainScreen } from "@earendil-works/pi-tui";
-import { copyToClipboard } from "../../utils/clipboard.ts";
+import { copyToClipboard, copyToPrimarySelection } from "../../utils/clipboard.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { keyDisplayText } from "./components/keybinding-hints.ts";
 import { theme } from "./theme/theme.ts";
@@ -10,6 +10,7 @@ export interface InteractiveTuiOptions {
 	readonly showHardwareCursor: boolean;
 	readonly logDirectory: string;
 	readonly terminal?: Terminal;
+	readonly onMiddleClickPaste?: () => void;
 	readonly onRightClickPaste?: () => void;
 	readonly fullscreenCopyOnSelect?: boolean;
 }
@@ -32,8 +33,17 @@ export function createInteractiveTui(options: InteractiveTuiOptions): TuiMainScr
 				return theme.bg("selectedBg", theme.fg("text", label));
 			},
 			openUrl: openBrowser,
+			onMiddleClickPaste: options.onMiddleClickPaste,
 			onRightClickPaste: options.onRightClickPaste,
 			copyOnSelect: options.fullscreenCopyOnSelect,
+			copySelectionOnSelect: async (text) => {
+				try {
+					await copyToPrimarySelection(text);
+					return true;
+				} catch (error) {
+					return error instanceof Error ? error.message : String(error);
+				}
+			},
 			copySelection: async (text) => {
 				try {
 					await copyToClipboard(text);

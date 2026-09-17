@@ -453,6 +453,73 @@ describe("TuiAltScreen", () => {
 		}
 	});
 
+	it("invokes middle-click paste only for an unmodified press and retains the active selection", async () => {
+		const terminal = new RecordingTerminal(20, 2);
+		let pasteCount = 0;
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			onMiddleClickPaste: () => {
+				pasteCount += 1;
+			},
+		});
+		tui.addChild(new Text("alpha\nbeta", 0, 0));
+		tui.start();
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[<0;1;1M");
+		terminal.sendInput("\x1b[<32;4;2M");
+		terminal.sendInput("\x1b[<0;4;2m");
+		await terminal.waitForRender();
+		assert.strictEqual(tui.hasActiveSelection(), true);
+
+		terminal.sendInput("\x1b[<1;1;1M");
+		terminal.sendInput("\x1b[<1;1;1m");
+		terminal.sendInput("\x1b[<5;1;1M");
+		terminal.sendInput("\x1b[<9;1;1M");
+		terminal.sendInput("\x1b[<17;1;1M");
+		await terminal.waitForRender();
+
+		assert.strictEqual(pasteCount, 1);
+		assert.strictEqual(tui.hasActiveSelection(), true);
+		const redrawEventCount = terminal.events.length;
+		tui.renderNow(true);
+		assert.ok(
+			terminal.events
+				.slice(redrawEventCount)
+				.some((event) => event.type === "write" && event.data.includes("\x1b[7m")),
+		);
+		tui.stop();
+	});
+
+	it("lets a mouse-aware component consume middle-click before the paste fallback", async () => {
+		const terminal = new VirtualTerminal(20, 1);
+		let pasteCount = 0;
+		let componentPresses = 0;
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			onMiddleClickPaste: () => {
+				pasteCount += 1;
+			},
+		});
+		tui.addChild({
+			render: () => ["control"],
+			invalidate: () => {},
+			handleMouse: (event) => {
+				if (event.type !== "press" || event.button !== "middle") return undefined;
+				componentPresses += 1;
+				return { handled: true };
+			},
+		});
+		tui.start();
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[<1;1;1M");
+		terminal.sendInput("\x1b[<1;1;1m");
+		await terminal.waitForRender();
+
+		assert.strictEqual(componentPresses, 1);
+		assert.strictEqual(pasteCount, 0);
+		tui.stop();
+	});
+
 	it("reveals an auto scrollbar when the pointer enters its hidden track", async () => {
 		const terminal = new RecordingTerminal(10, 5);
 		const tui = new TuiAltScreen(terminal);
@@ -1254,7 +1321,7 @@ describe("TuiAltScreen", () => {
 		tui.stop();
 	});
 
-	it("selects visible text with the mouse and copies it with OSC 52 after a generic release", async () => {
+	it("selects visible text with the mouse and silently copies it with OSC 52 after a generic release", async () => {
 		const terminal = new RecordingTerminal(20, 4);
 		const tui = new TuiAltScreen(terminal);
 		tui.addChild(new Text("\x1b[1mal\x1b[0mpha\nbeta\ngamma\ndelta", 0, 0));
@@ -1279,12 +1346,12 @@ describe("TuiAltScreen", () => {
 			terminal.events.some((event) => event.type === "write" && event.data.includes("al\x1b[0m\x1b[7mpha")),
 			"selection inverse must be reapplied after a reset inside the selection",
 		);
-		assert.ok(terminal.getViewport().some((line) => line.includes("Copied!")));
+		assert.ok(terminal.getViewport().every((line) => !line.includes("Copied!")));
 
 		tui.stop();
 	});
 
-	it("uses an injected copySelection handler instead of OSC 52 and reports success", async () => {
+	it("uses an injected copySelection handler instead of OSC 52 without flashing success", async () => {
 		const terminal = new RecordingTerminal(20, 4);
 		const copied: string[] = [];
 		const tui = new TuiAltScreen(terminal, undefined, undefined, {
@@ -1307,6 +1374,44 @@ describe("TuiAltScreen", () => {
 			terminal.events.every((event) => event.type !== "write" || !event.data.includes("\x1b]52;c;")),
 			"must not emit OSC 52 when a copySelection handler is provided",
 		);
+		assert.ok(terminal.getViewport().every((line) => !line.includes("Copied!")));
+
+		tui.stop();
+	});
+
+	it("keeps automatic primary copying separate from explicit clipboard copying", async () => {
+		const terminal = new RecordingTerminal(20, 4);
+		const primaryCopies: string[] = [];
+		const clipboardCopies: string[] = [];
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			copySelectionOnSelect: async (text) => {
+				primaryCopies.push(text);
+				return true;
+			},
+			copySelection: async (text) => {
+				clipboardCopies.push(text);
+				return true;
+			},
+		});
+		tui.addChild(new Text("alpha\nbeta\ngamma\ndelta", 0, 0));
+		tui.start();
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[<0;1;1M");
+		terminal.sendInput("\x1b[<32;4;2M");
+		terminal.sendInput("\x1b[<0;4;2m");
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(primaryCopies, ["alpha\nbeta"]);
+		assert.deepStrictEqual(clipboardCopies, []);
+		assert.strictEqual(tui.hasActiveSelection(), true);
+		assert.ok(terminal.events.some((event) => event.type === "write" && event.data.includes("\x1b[7malpha")));
+		assert.ok(terminal.getViewport().every((line) => !line.includes("Copied!")));
+
+		assert.strictEqual(await tui.copyActiveSelectionToClipboard(), true);
+		await terminal.waitForRender();
+		assert.deepStrictEqual(clipboardCopies, ["alpha\nbeta"]);
+		assert.strictEqual(tui.hasActiveSelection(), true);
 		assert.ok(terminal.getViewport().some((line) => line.includes("Copied!")));
 
 		tui.stop();

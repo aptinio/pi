@@ -181,14 +181,20 @@ export interface TuiAltScreenOptions {
 	scrollToEndIndicator?: () => string;
 	/** Open an OSC 8 hyperlink activated with a primary-button click. */
 	openUrl?: (url: string) => void;
+	/** Handle an unmodified middle-button press for primary-selection paste. */
+	onMiddleClickPaste?: () => void;
 	/** Handle an unmodified secondary-button press for clipboard paste. Currently enabled on Windows only. */
 	onRightClickPaste?: () => void;
-	/** Automatically copy selected text to the clipboard on mouse release (default: true). */
+	/** Automatically copy selected text on mouse release (default: true). */
 	copyOnSelect?: boolean;
 	/**
-	 * Copy selected text to the system clipboard. Return `true` on success, an error message to
-	 * display on failure, or `false` for a generic error. When omitted, the selection is copied
-	 * via an OSC 52 write.
+	 * Copy selected text automatically on mouse release. Defaults to `copySelection` when omitted.
+	 * Return `true` on success, an error message to display on failure, or `false` for a generic error.
+	 */
+	copySelectionOnSelect?: (text: string) => Promise<boolean | string>;
+	/**
+	 * Copy selected text explicitly to the system clipboard. Return `true` on success, an error message
+	 * to display on failure, or `false` for a generic error. When omitted, the selection is copied via OSC 52.
 	 */
 	copySelection?: (text: string) => Promise<boolean | string>;
 }
@@ -243,8 +249,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private readonly searchNavigationButtonStyle: (text: string, hovered: boolean) => string;
 	private readonly scrollToEndIndicator?: () => string;
 	private readonly openUrl?: (url: string) => void;
+	private readonly onMiddleClickPaste?: () => void;
 	private readonly onRightClickPaste?: () => void;
 	private copyOnSelect: boolean;
+	private readonly copySelectionOnSelect?: (text: string) => Promise<boolean | string>;
 	private readonly copySelection?: (text: string) => Promise<boolean | string>;
 
 	constructor(
@@ -270,8 +278,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.searchNavigationButtonStyle = options.searchNavigationButtonStyle ?? ((text) => text);
 		this.scrollToEndIndicator = options.scrollToEndIndicator;
 		this.openUrl = options.openUrl;
+		this.onMiddleClickPaste = options.onMiddleClickPaste;
 		this.onRightClickPaste = options.onRightClickPaste;
 		this.copyOnSelect = options.copyOnSelect ?? true;
+		this.copySelectionOnSelect = options.copySelectionOnSelect ?? options.copySelection;
 		this.copySelection = options.copySelection;
 		this.addInputListener((data) => this.handleViewportInput(data));
 	}
@@ -934,7 +944,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			return;
 		}
 
-		if (this.handleRightClickPaste(raw)) return;
+		if (this.handleMiddleClickPaste(raw) || this.handleRightClickPaste(raw)) return;
 		this.handleSelectionMouseEvent(raw);
 	}
 
@@ -995,6 +1005,16 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			y: Number.parseInt(match[3], 10) - 1,
 			release: match[4] === "m",
 		};
+	}
+
+	private handleMiddleClickPaste(event: SgrMouseEvent): boolean {
+		if (!this.onMiddleClickPaste || event.release || event.button !== 1) return false;
+		try {
+			this.onMiddleClickPaste();
+		} catch {
+			// Clipboard paste is best-effort.
+		}
+		return true;
 	}
 
 	private handleRightClickPaste(event: SgrMouseEvent): boolean {
@@ -1342,7 +1362,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 					return;
 				}
 			}
-			if (this.copyOnSelect) void this.copySelectionToClipboard();
+			if (this.copyOnSelect) void this.copySelectionOnRelease();
 			this.requestRender();
 			return;
 		}
@@ -1442,28 +1462,33 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return text.length === 0 ? undefined : text;
 	}
 
-	private async copySelectionToClipboard(): Promise<boolean> {
+	private async copySelectionOnRelease(): Promise<boolean> {
 		const text = this.getActiveSelectionText();
 		if (!text) return false;
-		return this.copyTextToClipboard(text);
+		return this.copyTextToClipboard(text, this.copySelectionOnSelect, false);
 	}
 
-	private async copyTextToClipboard(text: string): Promise<boolean> {
+	private async copyTextToClipboard(
+		text: string,
+		copySelection: ((text: string) => Promise<boolean | string>) | undefined = this.copySelection,
+		flashSuccess = true,
+	): Promise<boolean> {
 		// Prefer an injected clipboard implementation (native clipboard + platform tools with a
 		// verified success path) when the host app provides one. A bare OSC 52 write can show
 		// "Copied!" while leaving the system clipboard untouched (e.g. macOS Terminal.app, tmux
 		// without OSC 52 clipboard passthrough), so only report success when it actually copies.
-		if (this.copySelection) {
-			const result = await this.copySelection(text);
+		if (copySelection) {
+			const result = await copySelection(text);
 			const ok = result === true;
-			this.flash(
-				ok ? "Copied!" : typeof result === "string" ? result : "Copy failed",
-				ok ? undefined : COPY_ERROR_FLASH_DURATION_MS,
-			);
+			if (ok) {
+				if (flashSuccess) this.flash("Copied!");
+			} else {
+				this.flash(typeof result === "string" ? result : "Copy failed", COPY_ERROR_FLASH_DURATION_MS);
+			}
 			return ok;
 		}
 		this.terminal.write(`\x1b]52;c;${Buffer.from(text).toString("base64")}\x07`);
-		this.flash("Copied!");
+		if (flashSuccess) this.flash("Copied!");
 		return true;
 	}
 
