@@ -4,7 +4,7 @@ import { HStack } from "../src/components/h-stack.ts";
 import { ScrollView } from "../src/components/scroll-view.ts";
 import { Text } from "../src/components/text.ts";
 import { VStack } from "../src/components/v-stack.ts";
-import { renderLayoutFrame } from "../src/layout.ts";
+import { getScrollbarGeometry, renderLayoutFrame } from "../src/layout.ts";
 import { encodeKitty, registerKittyImageMetadata } from "../src/terminal-image.ts";
 import { stripTerminalSequences } from "../src/utils.ts";
 
@@ -187,6 +187,30 @@ describe("viewport layout", () => {
 		assert.strictEqual(scrollView.scrollTop, 0);
 		assert.strictEqual(scrollView.scrollBy(10), 7);
 		assert.strictEqual(scrollView.scrollTop, 3);
+		assert.strictEqual(scrollView.isFollowingEnd, true);
+	});
+
+	it("preserves a viewport past a shrunken end until explicit scrolling", () => {
+		const content = new Text("1\n2\n3\n4\n5\n6\n7\n8", 0, 0);
+		const scrollView = new ScrollView(content, { follow: "end", scrollbar: "always" });
+		renderLayoutFrame(scrollView, 10, 4, () => {});
+		assert.strictEqual(scrollView.scrollTop, 4);
+
+		scrollView.preserveViewport();
+		content.setText("1\n2\n3\n4\n5\n6");
+		const preservedFrame = renderLayoutFrame(scrollView, 10, 4, () => {});
+		assert.strictEqual(scrollView.scrollTop, 4);
+		assert.deepStrictEqual(
+			visibleLines(preservedFrame.lines).map((line) => line.slice(0, -1).trimEnd()),
+			["5", "6", "", ""],
+		);
+		const geometry = getScrollbarGeometry(preservedFrame.root);
+		assert.ok(geometry);
+		assert.strictEqual(geometry.thumbTop, geometry.trackTop + geometry.trackHeight - geometry.thumbHeight);
+
+		scrollView.scrollBy(1);
+		renderLayoutFrame(scrollView, 10, 4, () => {});
+		assert.strictEqual(scrollView.scrollTop, 2);
 		assert.strictEqual(scrollView.isFollowingEnd, true);
 	});
 
