@@ -165,7 +165,7 @@ export class AssistantMessageComponent extends Container {
 						if (event.type !== "click" || event.button !== "left") return undefined;
 						this.thinkingVisibilityOverrides.set(runIndex, !hidden);
 						if (this.lastMessage) this.updateContent(this.lastMessage);
-						return { handled: true };
+						return { handled: true, preserveViewport: true };
 					}),
 				);
 				if (hasVisibleContentAfter) {

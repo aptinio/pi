@@ -838,6 +838,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	private applyMouseDispatchResult(event: TuiMouseEvent, result: TuiMouseDispatchResult): boolean {
+		if (result.preserveViewport && this.currentLayout) {
+			for (const scrollView of getScrollViewsAt(this.currentLayout, event.screenX, event.screenY)) {
+				scrollView.preserveViewport();
+			}
+		}
 		const focusTarget = this.resolveMouseFocusTarget(result.focusTarget ?? result.target.component);
 		const focusChanged = result.focus === true && this.getFocusedComponent() !== focusTarget;
 		if (result.focus) this.setFocus(focusTarget);

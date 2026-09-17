@@ -573,7 +573,7 @@ describe("ToolExecutionComponent parity", () => {
 			ctrl: false,
 			clickCount: 1,
 		};
-		expect(component.handleMouse(event)?.handled).toBe(true);
+		expect(component.handleMouse(event)).toMatchObject({ handled: true, preserveViewport: true });
 		expect(stripAnsi(component.render(width).join("\n"))).toContain("hidden content");
 	});
 

@@ -236,7 +236,7 @@ import type { TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui"
 handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
   if (event.type === "click" && event.button === "left") {
     this.expanded = !this.expanded;
-    return { handled: true };
+    return { handled: true, preserveViewport: true };
   }
   if (event.type === "press" && event.button === "left") {
     return { handled: true, capture: true, focus: true };
@@ -249,7 +249,7 @@ handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 }
 ```
 
-Returning `handled` suppresses renderer-level fallback behavior. `capture` keeps subsequent drag and release events routed to the same component. `focus` requests keyboard focus. The optional `render` flag controls repainting: press, click, drag, and wheel default to rendering; move and release do not. Set `render: true` for a hover state that visibly changed, or `render: false` for a handled no-op. Render requests are coalesced and terminal output remains differential.
+Returning `handled` suppresses renderer-level fallback behavior. `capture` keeps subsequent drag and release events routed to the same component. `focus` requests keyboard focus. Set `preserveViewport: true` when a handled event changes content height: scroll views under the pointer keep their current top row instead of following the new end. The optional `render` flag controls repainting: press, click, drag, and wheel default to rendering; move and release do not. Set `render: true` for a hover state that visibly changed, or `render: false` for a handled no-op. Render requests are coalesced and terminal output remains differential.
 
 Unhandled gestures retain alternate-screen defaults: wheel input scrolls the nearest `ScrollView` and chains unused delta, primary-button drags select text, OSC 8 links open before parent click handlers, and unhandled right-click preserves configured paste behavior. A click is emitted only when press/release completes without a drag.
 
@@ -259,7 +259,7 @@ Use `MouseRegion` to add mouse behavior without changing a component's rendering
 const collapsible = new MouseRegion(content, (event) => {
   if (event.type !== "click" || event.button !== "left") return undefined;
   expanded = !expanded;
-  return { handled: true };
+  return { handled: true, preserveViewport: true };
 });
 ```
 
