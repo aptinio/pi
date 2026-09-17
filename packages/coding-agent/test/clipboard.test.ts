@@ -2,7 +2,12 @@ import { existsSync, readFileSync } from "node:fs";
 import type * as OsModule from "node:os";
 import type { NativeClipboard } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { copyToClipboard, readClipboardText } from "../src/utils/clipboard.ts";
+import {
+	copyToClipboard,
+	copyToPrimarySelection,
+	readClipboardText,
+	readPrimarySelectionText,
+} from "../src/utils/clipboard.ts";
 
 const mocks = vi.hoisted(() => ({
 	clipboard: {
@@ -107,6 +112,142 @@ describe("readClipboardText", () => {
 		mocks.command.mockImplementation(async (name) => (name === "wl-paste" ? undefined : Buffer.from("X11 text")));
 		await expect(readClipboardText()).resolves.toBe("X11 text");
 		expect(mocks.getNativeClipboard).not.toHaveBeenCalled();
+	});
+});
+
+describe("readPrimarySelectionText", () => {
+	test("reads the Wayland primary selection without touching the clipboard", async () => {
+		mocks.platform.mockReturnValue("linux");
+		vi.stubEnv("WAYLAND_DISPLAY", "wayland-0");
+		mocks.command.mockResolvedValue(Buffer.from("primary text"));
+
+		await expect(readPrimarySelectionText()).resolves.toBe("primary text");
+
+		expect(mocks.command).toHaveBeenCalledWith("wl-paste", ["--primary", "--no-newline", "--type", "text"], {
+			timeoutMs: 5000,
+		});
+		expect(mocks.getNativeClipboard).not.toHaveBeenCalled();
+	});
+
+	test("does not fall back to stale X11 PRIMARY when Wayland PRIMARY is empty", async () => {
+		mocks.platform.mockReturnValue("linux");
+		vi.stubEnv("WAYLAND_DISPLAY", "wayland-0");
+		vi.stubEnv("DISPLAY", ":0");
+		mocks.command.mockResolvedValue(Buffer.alloc(0));
+
+		await expect(readPrimarySelectionText()).resolves.toBeNull();
+
+		expect(mocks.command).toHaveBeenCalledOnce();
+	});
+
+	test("falls back from unavailable Wayland PRIMARY to X11 PRIMARY", async () => {
+		mocks.platform.mockReturnValue("linux");
+		vi.stubEnv("WAYLAND_DISPLAY", "wayland-0");
+		vi.stubEnv("DISPLAY", ":0");
+		mocks.command.mockImplementation(async (command) =>
+			command === "xclip" ? Buffer.from("X11 primary text") : undefined,
+		);
+
+		await expect(readPrimarySelectionText()).resolves.toBe("X11 primary text");
+
+		expect(mocks.command.mock.calls.map(([command]) => command)).toEqual(["wl-paste", "xclip"]);
+		expect(mocks.command).toHaveBeenLastCalledWith("xclip", ["-selection", "primary", "-out"], {
+			timeoutMs: 5000,
+		});
+		expect(mocks.getNativeClipboard).not.toHaveBeenCalled();
+	});
+
+	test("falls back from xclip to xsel", async () => {
+		mocks.platform.mockReturnValue("linux");
+		vi.stubEnv("DISPLAY", ":0");
+		mocks.command.mockImplementation(async (command) =>
+			command === "xsel" ? Buffer.from("xsel primary text") : undefined,
+		);
+
+		await expect(readPrimarySelectionText()).resolves.toBe("xsel primary text");
+
+		expect(mocks.command.mock.calls.map(([command]) => command)).toEqual(["xclip", "xsel"]);
+		expect(mocks.command).toHaveBeenLastCalledWith("xsel", ["--primary", "--output"], { timeoutMs: 5000 });
+	});
+
+	test("does not fall back to the regular clipboard", async () => {
+		mocks.platform.mockReturnValue("linux");
+		vi.stubEnv("DISPLAY", ":0");
+		mocks.command.mockResolvedValue(undefined);
+
+		await expect(readPrimarySelectionText()).resolves.toBeNull();
+
+		expect(mocks.getNativeClipboard).not.toHaveBeenCalled();
+	});
+
+	test("returns null on platforms without a primary selection", async () => {
+		await expect(readPrimarySelectionText()).resolves.toBeNull();
+
+		expect(mocks.command).not.toHaveBeenCalled();
+		expect(mocks.getNativeClipboard).not.toHaveBeenCalled();
+	});
+});
+
+describe("copyToPrimarySelection", () => {
+	test("writes the Wayland primary selection without touching the clipboard", async () => {
+		mocks.platform.mockReturnValue("linux");
+		vi.stubEnv("WAYLAND_DISPLAY", "wayland-0");
+
+		await copyToPrimarySelection("selected text");
+
+		expect(mocks.command).toHaveBeenCalledWith("wl-copy", ["--primary"], {
+			input: "selected text",
+			timeoutMs: 5000,
+		});
+		expect(mocks.getNativeClipboard).not.toHaveBeenCalled();
+		expect(osc52Writes).toHaveLength(0);
+	});
+
+	test("falls back from Wayland to the X11 primary selection", async () => {
+		mocks.platform.mockReturnValue("linux");
+		vi.stubEnv("WAYLAND_DISPLAY", "wayland-0");
+		vi.stubEnv("DISPLAY", ":0");
+		mocks.command.mockImplementation(async (command) => (command === "xclip" ? Buffer.alloc(0) : undefined));
+
+		await copyToPrimarySelection("selected text");
+
+		expect(mocks.command.mock.calls.map(([command]) => command)).toEqual(["wl-copy", "xclip"]);
+		expect(mocks.command).toHaveBeenLastCalledWith("xclip", ["-selection", "primary"], {
+			input: "selected text",
+			timeoutMs: 5000,
+		});
+	});
+
+	test("falls back from xclip to xsel", async () => {
+		mocks.platform.mockReturnValue("linux");
+		vi.stubEnv("DISPLAY", ":0");
+		mocks.command.mockImplementation(async (command) => (command === "xsel" ? Buffer.alloc(0) : undefined));
+
+		await copyToPrimarySelection("selected text");
+
+		expect(mocks.command.mock.calls.map(([command]) => command)).toEqual(["xclip", "xsel"]);
+		expect(mocks.command).toHaveBeenLastCalledWith("xsel", ["--primary", "--input"], {
+			input: "selected text",
+			timeoutMs: 5000,
+		});
+	});
+
+	test("does not fall back to the clipboard when Linux primary selection is unavailable", async () => {
+		mocks.platform.mockReturnValue("linux");
+		mocks.command.mockResolvedValue(undefined);
+
+		await expect(copyToPrimarySelection("selected text")).rejects.toThrow(
+			"Primary selection unavailable: no Wayland or X11 display detected",
+		);
+
+		expect(mocks.getNativeClipboard).not.toHaveBeenCalled();
+		expect(osc52Writes).toHaveLength(0);
+	});
+
+	test("uses the clipboard on platforms without a primary selection", async () => {
+		await copyToPrimarySelection("selected text");
+
+		expect(mocks.clipboard.setText).toHaveBeenCalledWith("selected text");
 	});
 });
 
