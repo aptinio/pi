@@ -292,7 +292,8 @@ export function getScrollbarGeometry(box: LayoutBox, includeHiddenAuto = false):
 	);
 	const maxScrollTop = Math.max(0, contentHeight - trackHeight);
 	const maxThumbTop = trackHeight - thumbHeight;
-	const thumbOffset = maxScrollTop === 0 ? 0 : Math.round((box.scrollView.scrollTop / maxScrollTop) * maxThumbTop);
+	const visibleScrollTop = Math.min(maxScrollTop, box.scrollView.scrollTop);
+	const thumbOffset = maxScrollTop === 0 ? 0 : Math.round((visibleScrollTop / maxScrollTop) * maxThumbTop);
 	const column = box.rect.x + box.rect.width - 1;
 	if (column < box.clip.x || column >= box.clip.x + box.clip.width) return undefined;
 

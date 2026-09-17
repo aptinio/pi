@@ -260,7 +260,7 @@ export class ToolExecutionComponent extends Container {
 		return new MouseRegion(component, (event) => this.handleExpansionClick(event));
 	}
 
-	private handleExpansionClick(event: TuiMouseEvent): { handled: true } | undefined {
+	private handleExpansionClick(event: TuiMouseEvent): { handled: true; preserveViewport: true } | undefined {
 		if (!this.result || event.type !== "click" || event.button !== "left") return undefined;
 		const previewLines = this.getConfiguredPreviewLines();
 		if (previewLines === undefined) {
@@ -273,7 +273,7 @@ export class ToolExecutionComponent extends Container {
 			this.expansionState = "collapsed";
 		}
 		this.updateDisplay();
-		return { handled: true };
+		return { handled: true, preserveViewport: true };
 	}
 
 	private getConfiguredPreviewLines(): number | undefined {

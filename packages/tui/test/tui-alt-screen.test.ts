@@ -96,6 +96,100 @@ describe("TuiAltScreen", () => {
 		tui.stop();
 	});
 
+	it("keeps transcript content above a clicked expansion fixed", async () => {
+		const terminal = new VirtualTerminal(20, 4);
+		const tui = new TuiAltScreen(terminal);
+		const expandable = new Text("toggle", 0, 0);
+		const region = new MouseRegion(expandable, (event) => {
+			if (event.type !== "click" || event.button !== "left") return undefined;
+			expandable.setText("toggle\ndetail 1\ndetail 2\ndetail 3");
+			return { handled: true, preserveViewport: true };
+		});
+		tui.addChild(
+			new VStack([
+				new Text(Array.from({ length: 8 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
+				region,
+				new Text("after", 0, 0),
+			]),
+		);
+		tui.start();
+		await terminal.waitForRender();
+
+		const topBefore = tui.viewportTop;
+		assert.deepStrictEqual(
+			terminal.getViewport().map((line) => line.trimEnd()),
+			["line 7", "line 8", "toggle", "after"],
+		);
+
+		terminal.sendInput("\x1b[<0;1;3M");
+		terminal.sendInput("\x1b[<0;1;3m");
+		await terminal.waitForRender();
+
+		assert.strictEqual(tui.viewportTop, topBefore);
+		assert.deepStrictEqual(
+			terminal.getViewport().map((line) => line.trimEnd()),
+			["line 7", "line 8", "toggle", "detail 1"],
+		);
+		tui.stop();
+	});
+
+	it("keeps transcript content above a clicked collapse fixed", async () => {
+		const terminal = new VirtualTerminal(20, 8);
+		const tui = new TuiAltScreen(terminal);
+		let expanded = true;
+		const expandable = new Text("toggle\ndetail 1\ndetail 2\ndetail 3", 0, 0);
+		const region = new MouseRegion(expandable, (event) => {
+			if (event.type !== "click" || event.button !== "left") return undefined;
+			expanded = !expanded;
+			expandable.setText(expanded ? "toggle\ndetail 1\ndetail 2\ndetail 3" : "toggle");
+			return { handled: true, preserveViewport: true };
+		});
+		tui.addChild(
+			new VStack([
+				new Text(Array.from({ length: 8 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
+				region,
+				new Text("after", 0, 0),
+			]),
+		);
+		tui.start();
+		await terminal.waitForRender();
+
+		const topBefore = tui.viewportTop;
+		assert.strictEqual(topBefore, 5);
+		terminal.sendInput("\x1b[<0;1;4M");
+		terminal.sendInput("\x1b[<0;1;4m");
+		await terminal.waitForRender();
+
+		assert.strictEqual(tui.viewportTop, topBefore);
+		assert.deepStrictEqual(
+			terminal.getViewport().map((line) => line.trimEnd()),
+			["line 6", "line 7", "line 8", "toggle", "after", "", "", ""],
+		);
+
+		terminal.sendInput("\x1b[<0;1;4M");
+		terminal.sendInput("\x1b[<0;1;4m");
+		await terminal.waitForRender();
+		assert.strictEqual(tui.viewportTop, topBefore);
+		assert.deepStrictEqual(
+			terminal.getViewport().map((line) => line.trimEnd()),
+			["line 6", "line 7", "line 8", "toggle", "detail 1", "detail 2", "detail 3", "after"],
+		);
+
+		terminal.sendInput("\x1b[<0;1;4M");
+		terminal.sendInput("\x1b[<0;1;4m");
+		await terminal.waitForRender();
+		assert.strictEqual(tui.viewportTop, topBefore);
+
+		terminal.sendInput("\x1b[<65;1;4M");
+		await terminal.waitForRender();
+		assert.strictEqual(tui.viewportTop, 2);
+		assert.deepStrictEqual(
+			terminal.getViewport().map((line) => line.trimEnd()),
+			["line 3", "line 4", "line 5", "line 6", "line 7", "line 8", "toggle", "after"],
+		);
+		tui.stop();
+	});
+
 	it("shows a clickable jump-to-end indicator on the transcript's last row while scrolled up", async () => {
 		const terminal = new VirtualTerminal(30, 6);
 		const tui = new TuiAltScreen(terminal, undefined, undefined, {
