@@ -102,7 +102,20 @@ describe("pi-messages", () => {
 				{ type: "text_start", contentIndex: 0 },
 				{ type: "text_delta", contentIndex: 0, delta: "Hel" },
 				{ type: "text_delta", contentIndex: 0, delta: "lo" },
-				{ type: "text_end", contentIndex: 0, content: "Hello" },
+				{
+					type: "text_end",
+					contentIndex: 0,
+					content: "Hello",
+					annotations: [
+						{
+							type: "url_citation",
+							url: "https://example.com",
+							title: "Example",
+							startIndex: 0,
+							endIndex: 5,
+						},
+					],
+				},
 				{ type: "toolcall_start", contentIndex: 1, id: "call_1", toolName: "read" },
 				{ type: "toolcall_delta", contentIndex: 1, delta: '{"path":' },
 				{ type: "toolcall_delta", contentIndex: 1, delta: '"a.txt"}' },
@@ -147,7 +160,20 @@ describe("pi-messages", () => {
 		expect(message.model).toBe("auto");
 		expect(message.provider).toBe("radius");
 		expect(message.content).toEqual([
-			{ type: "text", text: "Hello", textSignature: undefined },
+			{
+				type: "text",
+				text: "Hello",
+				textSignature: undefined,
+				annotations: [
+					{
+						type: "url_citation",
+						url: "https://example.com",
+						title: "Example",
+						startIndex: 0,
+						endIndex: 5,
+					},
+				],
+			},
 			{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "a.txt" } },
 		]);
 		expect(events.some((event) => event.type === "text_delta")).toBe(true);

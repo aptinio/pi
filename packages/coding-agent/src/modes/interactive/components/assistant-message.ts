@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import { Container, Markdown, type MarkdownTheme, MouseRegion, Spacer, Text } from "@earendil-works/pi-tui";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
@@ -111,7 +111,7 @@ export class AssistantMessageComponent extends Container {
 				// Assistant text messages with no background - trim the text
 				// Set paddingY=0 to avoid extra spacing before tool executions
 				this.contentContainer.addChild(
-					new Markdown(content.text.trim(), this.outputPad, 0, this.markdownTheme, undefined, {
+					new Markdown(formatTextWithCitations(content), this.outputPad, 0, this.markdownTheme, undefined, {
 						transform: createMarkdownTransform("assistant", this.isStreaming, this.markdownTransformers),
 					}),
 				);
@@ -199,4 +199,36 @@ export class AssistantMessageComponent extends Container {
 			}
 		}
 	}
+}
+
+function formatTextWithCitations(content: TextContent): string {
+	const text = content.text.trim();
+	if (!content.annotations?.length) return text;
+
+	const sources: string[] = [];
+	const seen = new Set<string>();
+	for (const citation of content.annotations) {
+		if (citation.type !== "url_citation") continue;
+		const key = `${citation.url}\n${citation.title}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+
+		const label = escapeMarkdownText(citation.title.trim() || citation.url);
+		let rendered = label;
+		try {
+			const url = new URL(citation.url.trim());
+			if (url.protocol === "http:" || url.protocol === "https:") {
+				const href = url.href.replaceAll("(", "%28").replaceAll(")", "%29");
+				rendered = `[${label}](${href})`;
+			}
+		} catch {
+			// Keep malformed provider URLs as non-clickable titles.
+		}
+		sources.push(`${sources.length + 1}. ${rendered}`);
+	}
+	return sources.length > 0 ? `${text}\n\nSources:\n${sources.join("\n")}` : text;
+}
+
+function escapeMarkdownText(text: string): string {
+	return text.replace(/[\\`*_[\]{}()#+\-.!|>]/g, "\\$&").replace(/[\r\n\t]+/g, " ");
 }

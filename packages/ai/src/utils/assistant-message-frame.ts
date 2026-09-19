@@ -1,4 +1,11 @@
-import type { AssistantMessage, AssistantMessageEvent, TextContent, ThinkingContent, ToolCall } from "../types.ts";
+import type {
+	AssistantMessage,
+	AssistantMessageEvent,
+	TextAnnotation,
+	TextContent,
+	ThinkingContent,
+	ToolCall,
+} from "../types.ts";
 import { parseStreamingJson } from "./json-parse.ts";
 
 /**
@@ -9,7 +16,13 @@ export type AssistantMessageFrame =
 	| { type: "start"; partial: AssistantMessage }
 	| { type: "text_start"; contentIndex: number; content: TextContent }
 	| { type: "text_delta"; contentIndex: number; delta: string }
-	| { type: "text_end"; contentIndex: number; content: string; textSignature?: string }
+	| {
+			type: "text_end";
+			contentIndex: number;
+			content: string;
+			textSignature?: string;
+			annotations?: TextAnnotation[];
+	  }
 	| { type: "thinking_start"; contentIndex: number; content: ThinkingContent }
 	| { type: "thinking_delta"; contentIndex: number; delta: string }
 	| {
@@ -51,6 +64,7 @@ function cloneTextContent(content: TextContent): TextContent {
 		type: "text",
 		text: content.text,
 		...(content.textSignature === undefined ? {} : { textSignature: content.textSignature }),
+		...(content.annotations === undefined ? {} : { annotations: structuredClone(content.annotations) }),
 	};
 }
 
@@ -186,6 +200,7 @@ export class AssistantMessageFrameEncoder {
 					contentIndex: event.contentIndex,
 					content: event.content,
 					...(content.textSignature === undefined ? {} : { textSignature: content.textSignature }),
+					...(content.annotations === undefined ? {} : { annotations: structuredClone(content.annotations) }),
 				};
 			}
 			case "thinking_start": {
@@ -405,7 +420,9 @@ export function reduceAssistantMessageFrames(frames: Iterable<AssistantMessageFr
 				if (block.type !== "text") throw new Error("Unreachable text frame state");
 				block.text = frame.content;
 				delete block.textSignature;
+				delete block.annotations;
 				if (frame.textSignature !== undefined) block.textSignature = frame.textSignature;
+				if (frame.annotations !== undefined) block.annotations = structuredClone(frame.annotations);
 				state.ended = true;
 				break;
 			}
