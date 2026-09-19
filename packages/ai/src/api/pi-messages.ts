@@ -20,6 +20,7 @@ import type {
 	SimpleStreamOptions,
 	StreamFunction,
 	StreamOptions,
+	TextAnnotation,
 	ThinkingLevel,
 	ToolCall,
 	TranscriptContext,
@@ -56,7 +57,13 @@ export type PiMessagesEvent =
 	| { type: "start" }
 	| { type: "text_start"; contentIndex: number }
 	| { type: "text_delta"; contentIndex: number; delta: string }
-	| { type: "text_end"; contentIndex: number; content: string; contentSignature?: string }
+	| {
+			type: "text_end";
+			contentIndex: number;
+			content: string;
+			contentSignature?: string;
+			annotations?: TextAnnotation[];
+	  }
 	| { type: "thinking_start"; contentIndex: number }
 	| { type: "thinking_delta"; contentIndex: number; delta: string }
 	| {
@@ -228,6 +235,7 @@ function createEventConverter(model: Model<"pi-messages">) {
 				Object.assign(partial.content[event.contentIndex]!, {
 					text: event.content,
 					textSignature: event.contentSignature,
+					...(event.annotations === undefined ? {} : { annotations: structuredClone(event.annotations) }),
 				});
 				break;
 			case "thinking_start":
