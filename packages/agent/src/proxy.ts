@@ -12,6 +12,7 @@ import {
 	parseStreamingJson,
 	type SimpleStreamOptions,
 	type StopReason,
+	type TextAnnotation,
 	type ToolCall,
 	type TranscriptContext,
 } from "@earendil-works/pi-ai";
@@ -37,7 +38,7 @@ export type ProxyAssistantMessageEvent =
 	| { type: "start" }
 	| { type: "text_start"; contentIndex: number }
 	| { type: "text_delta"; contentIndex: number; delta: string }
-	| { type: "text_end"; contentIndex: number; contentSignature?: string }
+	| { type: "text_end"; contentIndex: number; contentSignature?: string; annotations?: TextAnnotation[] }
 	| { type: "thinking_start"; contentIndex: number }
 	| { type: "thinking_delta"; contentIndex: number; delta: string }
 	| { type: "thinking_end"; contentIndex: number; contentSignature?: string }
@@ -297,6 +298,8 @@ function processProxyEvent(
 			const content = partial.content[proxyEvent.contentIndex];
 			if (content?.type === "text") {
 				content.textSignature = proxyEvent.contentSignature;
+				if (proxyEvent.annotations === undefined) delete content.annotations;
+				else content.annotations = structuredClone(proxyEvent.annotations);
 				return {
 					type: "text_end",
 					contentIndex: proxyEvent.contentIndex,

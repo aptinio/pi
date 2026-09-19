@@ -44,20 +44,43 @@ describe("assistant message frames", () => {
 		const frames: AssistantMessageFrame[] = [frame(encoder, { type: "start", partial })];
 		partial.content.push({ type: "text", text: "Hello " });
 		frames.push(frame(encoder, { type: "text_start", contentIndex: 0, partial }));
-		partial.content[0] = { type: "text", text: "Hello world", textSignature: "sig-text" };
+		partial.content[0] = {
+			type: "text",
+			text: "Hello world",
+			textSignature: "sig-text",
+			annotations: [
+				{
+					type: "url_citation",
+					url: "https://example.com",
+					title: "Example",
+					startIndex: 0,
+					endIndex: 5,
+				},
+			],
+		};
 		frames.push(
 			frame(encoder, { type: "text_delta", contentIndex: 0, delta: "incorrect", partial }),
 			frame(encoder, { type: "text_end", contentIndex: 0, content: "Hello world", partial }),
 		);
 
+		const annotations = [
+			{
+				type: "url_citation" as const,
+				url: "https://example.com",
+				title: "Example",
+				startIndex: 0,
+				endIndex: 5,
+			},
+		];
 		expect(frames.at(-1)).toEqual({
 			type: "text_end",
 			contentIndex: 0,
 			content: "Hello world",
 			textSignature: "sig-text",
+			annotations,
 		});
 		expect(reduceAssistantMessageFrames(frames)?.content).toEqual([
-			{ type: "text", text: "Hello world", textSignature: "sig-text" },
+			{ type: "text", text: "Hello world", textSignature: "sig-text", annotations },
 		]);
 	});
 
