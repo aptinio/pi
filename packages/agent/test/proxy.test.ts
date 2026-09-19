@@ -30,6 +30,37 @@ afterEach(() => {
 });
 
 describe("streamProxy", () => {
+	it("preserves text annotations received on text_end", async () => {
+		const annotations = [
+			{
+				type: "url_citation" as const,
+				url: "https://example.com",
+				title: "Example",
+				startIndex: 0,
+				endIndex: 5,
+			},
+		];
+		const proxyEvents: ProxyAssistantMessageEvent[] = [
+			{ type: "start" },
+			{ type: "text_start", contentIndex: 0 },
+			{ type: "text_delta", contentIndex: 0, delta: "Hello" },
+			{ type: "text_end", contentIndex: 0, annotations },
+			{ type: "done", reason: "stop", usage },
+		];
+		const body = proxyEvents.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(body, { status: 200 })),
+		);
+
+		const result = await streamProxy(model, normalizeContext({ systemPrompt: "", messages: [] }), {
+			authToken: "test-token",
+			proxyUrl: "https://proxy.example.com",
+		}).result();
+
+		expect(result.content[0]).toEqual({ type: "text", text: "Hello", textSignature: undefined, annotations });
+	});
+
 	it("preserves tool-call metadata received only on toolcall_end", async () => {
 		const proxyEvents: ProxyAssistantMessageEvent[] = [
 			{ type: "start" },
