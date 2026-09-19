@@ -29,7 +29,9 @@ export function applyFrame(o: { message?: AssistantMessage }, frame: AssistantMe
 			const b = c[frame.contentIndex] as TextContent;
 			b.text = frame.content;
 			delete b.textSignature;
+			delete b.annotations;
 			if (frame.textSignature !== undefined) b.textSignature = frame.textSignature;
+			if (frame.annotations !== undefined) b.annotations = structuredClone(frame.annotations);
 			return;
 		}
 		case "thinking_start":

@@ -27,6 +27,7 @@ import type {
 	Tool,
 	ToolCall,
 	TranscriptContext,
+	UrlCitation,
 	Usage,
 } from "../types.ts";
 import type { AssistantMessageEventStream } from "../utils/event-stream.ts";
@@ -422,12 +423,81 @@ function appendCustomToolCallInput(block: StreamingToolCall, nextInput: string, 
 	return delta;
 }
 
+type PendingUrlCitation = { contentIndex: number; citation: UrlCitation };
+
 type ResponsesOutputSlot =
 	| { type: "thinking"; block: ThinkingContent; contentIndex: number }
-	| { type: "text"; block: TextContent; contentIndex: number }
+	| { type: "text"; block: TextContent; contentIndex: number; pendingCitations: PendingUrlCitation[] }
 	| { type: "toolCall"; block: StreamingToolCall; contentIndex: number };
 
 type ToolCallOutputSlot = Extract<ResponsesOutputSlot, { type: "toolCall" }>;
+
+function normalizeUrlCitation(annotation: unknown, offset = 0): UrlCitation | undefined {
+	if (!annotation || typeof annotation !== "object") return undefined;
+	const value = annotation as Record<string, unknown>;
+	if (
+		value.type !== "url_citation" ||
+		typeof value.url !== "string" ||
+		typeof value.title !== "string" ||
+		typeof value.start_index !== "number" ||
+		!Number.isFinite(value.start_index) ||
+		typeof value.end_index !== "number" ||
+		!Number.isFinite(value.end_index)
+	) {
+		return undefined;
+	}
+	return {
+		type: "url_citation",
+		url: value.url,
+		title: value.title,
+		startIndex: value.start_index + offset,
+		endIndex: value.end_index + offset,
+	};
+}
+
+function appendUrlCitation(block: TextContent, citation: UrlCitation): void {
+	block.annotations ??= [];
+	if (
+		block.annotations.some(
+			(existing) =>
+				existing.type === citation.type &&
+				existing.url === citation.url &&
+				existing.title === citation.title &&
+				existing.startIndex === citation.startIndex &&
+				existing.endIndex === citation.endIndex,
+		)
+	) {
+		return;
+	}
+	block.annotations.push(citation);
+}
+
+function appendMessageUrlCitations(
+	block: TextContent,
+	item: ResponseOutputMessage,
+	pendingCitations: readonly PendingUrlCitation[],
+): void {
+	let offset = 0;
+	for (const [contentIndex, content] of (item.content ?? []).entries()) {
+		for (const pending of pendingCitations) {
+			if (pending.contentIndex !== contentIndex) continue;
+			appendUrlCitation(block, {
+				...pending.citation,
+				startIndex: pending.citation.startIndex + offset,
+				endIndex: pending.citation.endIndex + offset,
+			});
+		}
+		if (content.type === "output_text") {
+			for (const annotation of content.annotations ?? []) {
+				const citation = normalizeUrlCitation(annotation, offset);
+				if (citation) appendUrlCitation(block, citation);
+			}
+			offset += content.text.length;
+		} else {
+			offset += content.refusal.length;
+		}
+	}
+}
 
 export async function processResponsesStream<TApi extends Api>(
 	openaiStream: AsyncIterable<ResponseStreamEvent>,
@@ -477,7 +547,12 @@ export async function processResponsesStream<TApi extends Api>(
 			applyMessagePhaseStopReason(item);
 			const block: TextContent = { type: "text", text: "" };
 			output.content.push(block);
-			const slot = { type: "text", block, contentIndex: output.content.length - 1 } satisfies ResponsesOutputSlot;
+			const slot = {
+				type: "text",
+				block,
+				contentIndex: output.content.length - 1,
+				pendingCitations: [],
+			} satisfies ResponsesOutputSlot;
 			outputSlots.set(outputIndex, slot);
 			stream.push({ type: "text_start", contentIndex: slot.contentIndex, partial: output });
 			return slot;
@@ -650,6 +725,11 @@ export async function processResponsesStream<TApi extends Api>(
 				delta: event.delta,
 				partial: output,
 			});
+		} else if (event.type === "response.output_text.annotation.added") {
+			const slot = getSlot(event.output_index, "text");
+			if (!slot) continue;
+			const citation = normalizeUrlCitation(event.annotation);
+			if (citation) slot.pendingCitations.push({ contentIndex: event.content_index, citation });
 		} else if (event.type === "response.function_call_arguments.delta") {
 			const slot = getSlot(event.output_index, "toolCall");
 			if (!slot || slot.block.partialJson === undefined) continue;
@@ -698,6 +778,7 @@ export async function processResponsesStream<TApi extends Api>(
 				outputSlots.delete(event.output_index);
 			} else if (item.type === "message" && slot?.type === "text") {
 				slot.block.text = item.content?.map((c) => (c.type === "output_text" ? c.text : c.refusal)).join("") || "";
+				appendMessageUrlCitations(slot.block, item, slot.pendingCitations);
 				slot.block.textSignature = encodeTextSignatureV1(item.id, item.phase ?? undefined);
 				stream.push({
 					type: "text_end",

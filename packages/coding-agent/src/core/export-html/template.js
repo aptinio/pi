@@ -628,6 +628,30 @@
         return href;
       }
 
+      function renderCitations(annotations) {
+        if (!Array.isArray(annotations)) return '';
+        const seen = new Set();
+        const items = [];
+        for (const citation of annotations) {
+          if (citation?.type !== 'url_citation' || typeof citation.url !== 'string' || typeof citation.title !== 'string') {
+            continue;
+          }
+          const key = `${citation.url}\n${citation.title}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          const href = sanitizeMarkdownUrl(citation.url);
+          const title = escapeHtml(citation.title.trim() || citation.url);
+          const source = href && /^https?:/i.test(href)
+            ? `<a href="${escapeHtml(href)}" rel="noreferrer">${title}</a>`
+            : title;
+          items.push(`<li>${source}</li>`);
+        }
+        return items.length > 0
+          ? `<div class="citation-sources"><div class="citation-sources-label">Sources</div><ol>${items.join('')}</ol></div>`
+          : '';
+      }
+
       /**
        * Truncate string to maxLen chars, append "..." if truncated.
        */
@@ -1250,7 +1274,7 @@
 
             for (const block of msg.content) {
               if (block.type === 'text' && block.text.trim()) {
-                html += `<div class="assistant-text markdown-content">${safeMarkedParse(block.text)}</div>`;
+                html += `<div class="assistant-text markdown-content">${safeMarkedParse(block.text)}</div>${renderCitations(block.annotations)}`;
               } else if (block.type === 'thinking' && block.thinking.trim()) {
                 html += `<div class="thinking-block">
                   <div class="thinking-text">${escapeHtml(block.thinking)}</div>

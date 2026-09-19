@@ -361,10 +361,24 @@ export interface TextSignatureV1 {
 	phase?: "commentary" | "final_answer";
 }
 
+export interface UrlCitation {
+	type: "url_citation";
+	url: string;
+	title: string;
+	/** Start offset of the cited span in `TextContent.text`. */
+	startIndex: number;
+	/** Exclusive end offset of the cited span in `TextContent.text`. */
+	endIndex: number;
+}
+
+export type TextAnnotation = UrlCitation;
+
 export interface TextContent {
 	type: "text";
 	text: string;
 	textSignature?: string; // e.g., for OpenAI responses, message metadata (legacy id string or TextSignatureV1 JSON)
+	/** Provider-neutral annotations over this text. Omitted for legacy and unannotated content. */
+	annotations?: TextAnnotation[];
 }
 
 export interface ThinkingContent {

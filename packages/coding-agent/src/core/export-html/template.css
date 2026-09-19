@@ -428,6 +428,26 @@
       padding-bottom: 0;
     }
 
+    .citation-sources {
+      padding: var(--line-height);
+      padding-top: 0;
+      color: var(--dim);
+      font-size: 11px;
+    }
+
+    .citation-sources-label {
+      font-weight: bold;
+    }
+
+    .citation-sources ol {
+      margin: 0;
+      padding-left: calc(var(--line-height) * 2);
+    }
+
+    .citation-sources a {
+      color: var(--mdLink);
+    }
+
     .message-timestamp + .assistant-text,
     .message-timestamp + .thinking-block {
       padding-top: 0;
