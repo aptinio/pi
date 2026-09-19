@@ -151,6 +151,68 @@ describe("AssistantMessageComponent", () => {
 		expect(updatedLines.some((line) => line.startsWith("reasoning"))).toBe(true);
 	});
 
+	test("renders assistant URL citations as sources without mutating the message", () => {
+		initTheme("dark");
+		const message = createAssistantMessage([
+			{
+				type: "text",
+				text: "Pi has hosted search.",
+				annotations: [
+					{
+						type: "url_citation",
+						url: "https://example.com/search",
+						title: "Hosted search documentation",
+						startIndex: 7,
+						endIndex: 20,
+					},
+				],
+			},
+		]);
+		const original = structuredClone(message);
+		const component = new AssistantMessageComponent(message);
+		const rendered = stripAnsi(component.render(100).join("\n"));
+
+		expect(rendered).toContain("Sources:");
+		expect(rendered).toContain("Hosted search documentation");
+		expect(message).toEqual(original);
+	});
+
+	test("escapes parentheses in citation Markdown destinations", () => {
+		initTheme("dark");
+		let transformed = "";
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([
+				{
+					type: "text",
+					text: "Cited text.",
+					annotations: [
+						{
+							type: "url_citation",
+							url: "https://example.com/wiki/Foo_(bar)",
+							title: "Example",
+							startIndex: 0,
+							endIndex: 5,
+						},
+					],
+				},
+			]),
+			false,
+			undefined,
+			"Thinking...",
+			1,
+			[
+				(markdown) => {
+					transformed = markdown;
+					return markdown;
+				},
+			],
+		);
+
+		component.render(100);
+
+		expect(transformed).toContain("[Example](https://example.com/wiki/Foo_%28bar%29)");
+	});
+
 	test("chains Markdown transformers in registration order", () => {
 		initTheme("dark");
 		const calls: string[] = [];
