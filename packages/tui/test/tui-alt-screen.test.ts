@@ -1254,6 +1254,92 @@ describe("TuiAltScreen", () => {
 		tui.stop();
 	});
 
+	it("groups assistant text ranges while excluding thinking rows", async () => {
+		const terminal = new RecordingTerminal(20, 3);
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			promptSelectionStyle: (text) => `\x1b[45m${text}\x1b[49m`,
+		});
+		tui.addChild(
+			new Text(
+				[
+					`${OSC133_ZONE_START}\x1b]133;B\x07first answer`,
+					"private reasoning",
+					`${OSC133_ZONE_START}\x1b]133;B\x07\x1b]133;C\x07second answer`,
+					`${OSC133_ZONE_START}\x1b]133;B\x07\x1b]133;C\x07next message`,
+				].join("\n"),
+				0,
+				0,
+			),
+		);
+		tui.start();
+		await terminal.waitForRender();
+
+		const selectionEventCount = terminal.events.length;
+		terminal.sendInput("\x1b[1;6A");
+		await terminal.waitForRender();
+		const selectionWrites = terminal.events
+			.slice(selectionEventCount)
+			.filter((event): event is { type: "write"; data: string } => event.type === "write")
+			.map((event) => event.data)
+			.join("");
+		assert.ok(selectionWrites.includes("\x1b[45mfirst answer"));
+		assert.ok(selectionWrites.includes("\x1b[45msecond answer"));
+		assert.ok(!selectionWrites.includes("\x1b[45mprivate reasoning"));
+
+		const nextEventCount = terminal.events.length;
+		terminal.sendInput("\x1b[1;6B");
+		await terminal.waitForRender();
+		const nextWrites = terminal.events
+			.slice(nextEventCount)
+			.filter((event): event is { type: "write"; data: string } => event.type === "write")
+			.map((event) => event.data)
+			.join("");
+		assert.ok(nextWrites.includes("\x1b[45mnext message"));
+		tui.stop();
+	});
+
+	it("keeps legacy single-line marker order from selecting following unmarked rows", async () => {
+		const terminal = new RecordingTerminal(20, 2);
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			promptSelectionStyle: (text) => `\x1b[45m${text}\x1b[49m`,
+		});
+		tui.addChild(
+			new Text(
+				[
+					"\x1b]133;B\x07\x1b]133;C\x07\x1b]133;A\x07legacy message",
+					"unmarked detail",
+					`${OSC133_ZONE_START}\x1b]133;B\x07\x1b]133;C\x07next message`,
+				].join("\n"),
+				0,
+				0,
+			),
+		);
+		tui.start();
+		await terminal.waitForRender();
+
+		const selectionEventCount = terminal.events.length;
+		terminal.sendInput("\x1b[1;6A");
+		await terminal.waitForRender();
+		const selectionWrites = terminal.events
+			.slice(selectionEventCount)
+			.filter((event): event is { type: "write"; data: string } => event.type === "write")
+			.map((event) => event.data)
+			.join("");
+		assert.ok(selectionWrites.includes("\x1b[45mlegacy message"));
+		assert.ok(!selectionWrites.includes("\x1b[45munmarked detail"));
+
+		const nextEventCount = terminal.events.length;
+		terminal.sendInput("\x1b[1;6B");
+		await terminal.waitForRender();
+		const nextWrites = terminal.events
+			.slice(nextEventCount)
+			.filter((event): event is { type: "write"; data: string } => event.type === "write")
+			.map((event) => event.data)
+			.join("");
+		assert.ok(nextWrites.includes("\x1b[45mnext message"));
+		tui.stop();
+	});
+
 	it("selects a first semantic prompt that starts at the viewport top", async () => {
 		const terminal = new RecordingTerminal(20, 4);
 		const tui = new TuiAltScreen(terminal, undefined, undefined, {

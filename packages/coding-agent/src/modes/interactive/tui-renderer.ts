@@ -5,6 +5,9 @@ import { openBrowser } from "../../utils/open-browser.ts";
 import { keyDisplayText } from "./components/keybinding-hints.ts";
 import { theme } from "./theme/theme.ts";
 
+const PROMPT_SELECTION_START = "\x1b[4;53m";
+const PROMPT_SELECTION_END = "\x1b[24;55m";
+
 export interface InteractiveTuiOptions {
 	readonly tuiMode: "regular" | "fullscreen";
 	readonly showHardwareCursor: boolean;
@@ -27,7 +30,7 @@ export function createInteractiveTui(options: InteractiveTuiOptions): TuiMainScr
 			searchMatchStyle: (text) => theme.underline(styleSearchMatch(text)),
 			searchCurrentMatchStyle: (text) => theme.bold(theme.inverse(styleSearchMatch(text))),
 			searchNavigationButtonStyle: (text, hovered) => (hovered ? theme.underline(text) : text),
-			promptSelectionStyle: (text) => theme.bg("selectedBg", theme.fg("text", text)),
+			promptSelectionStyle: (text) => `${PROMPT_SELECTION_START}${text}${PROMPT_SELECTION_END}`,
 			scrollToEndIndicator: () => {
 				const shortcut = keyDisplayText("tui.altScreen.bottom");
 				const label = ` ↓ Jump to latest message${shortcut ? ` · ${shortcut}` : ""} `;

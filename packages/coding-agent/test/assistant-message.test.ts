@@ -34,15 +34,82 @@ function createAssistantMessage(
 }
 
 describe("AssistantMessageComponent", () => {
-	test("adds OSC 133 zone markers to assistant messages without tool calls", () => {
+	test("adds OSC 133 zone markers to assistant text without tool calls", () => {
 		initTheme("dark");
 
 		const component = new AssistantMessageComponent(createAssistantMessage([{ type: "text", text: "hello" }]));
 		const lines = component.render(40);
+		const textRow = lines.findIndex((line) => stripAnsi(line).includes("hello"));
 
-		expect(lines).not.toHaveLength(0);
-		expect(lines[0]).toContain(OSC133_ZONE_START);
-		expect(lines[lines.length - 1].startsWith(OSC133_ZONE_END + OSC133_ZONE_FINAL)).toBe(true);
+		expect(textRow).toBeGreaterThanOrEqual(0);
+		expect(lines[textRow]).toContain(OSC133_ZONE_START);
+		expect(lines[textRow]).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
+	});
+
+	test("marks the complete wrapped assistant text range", () => {
+		initTheme("dark");
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([{ type: "text", text: "one two three four five six seven eight" }]),
+		);
+		const answerRows = component.render(12).filter((line) => stripAnsi(line).trim().length > 0);
+		const firstAnswer = answerRows[0];
+		const lastAnswer = answerRows[answerRows.length - 1];
+
+		expect(answerRows.length).toBeGreaterThan(1);
+		expect(firstAnswer).toContain(OSC133_ZONE_START);
+		expect(firstAnswer).not.toContain(OSC133_ZONE_END);
+		expect(lastAnswer).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
+		expect(lastAnswer).not.toContain(OSC133_ZONE_START);
+	});
+
+	test("excludes expanded and collapsed thinking runs from assistant semantic zones", () => {
+		initTheme("dark");
+		const message = createAssistantMessage([
+			{ type: "text", text: "first answer" },
+			{ type: "thinking", thinking: "private reasoning" },
+			{ type: "text", text: "second answer" },
+		]);
+
+		for (const hideThinking of [false, true]) {
+			const lines = new AssistantMessageComponent(message, hideThinking).render(80);
+			const firstAnswer = lines.find((line) => stripAnsi(line).includes("first answer"));
+			const thinking = lines.find((line) =>
+				stripAnsi(line).includes(hideThinking ? "Thinking..." : "private reasoning"),
+			);
+			const secondAnswer = lines.find((line) => stripAnsi(line).includes("second answer"));
+
+			expect(firstAnswer).toContain(OSC133_ZONE_START);
+			expect(firstAnswer).toContain(OSC133_ZONE_END);
+			expect(firstAnswer).not.toContain(OSC133_ZONE_FINAL);
+			expect(thinking).not.toContain(OSC133_ZONE_START);
+			expect(thinking).not.toContain(OSC133_ZONE_END);
+			expect(thinking).not.toContain(OSC133_ZONE_FINAL);
+			expect(secondAnswer).toContain(OSC133_ZONE_START);
+			expect(secondAnswer).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
+		}
+	});
+
+	test("finalizes the last assistant text range that actually renders", () => {
+		initTheme("dark");
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([
+				{ type: "text", text: "visible answer" },
+				{ type: "thinking", thinking: "private reasoning" },
+				{ type: "text", text: "removed answer" },
+			]),
+			false,
+			undefined,
+			"Thinking...",
+			1,
+			[(markdown) => (markdown === "removed answer" ? "" : markdown)],
+		);
+		const lines = component.render(80);
+		const visibleAnswer = lines.find((line) => stripAnsi(line).includes("visible answer"));
+		const thinking = lines.find((line) => stripAnsi(line).includes("private reasoning"));
+
+		expect(visibleAnswer).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
+		expect(thinking).not.toContain(OSC133_ZONE_FINAL);
+		expect(stripAnsi(lines.join("\n"))).not.toContain("removed answer");
 	});
 
 	test("does not add OSC 133 zone markers when assistant message contains tool calls", () => {
@@ -68,10 +135,14 @@ describe("AssistantMessageComponent", () => {
 			createAssistantMessage([{ type: "thinking", thinking: "private reasoning" }], { stopReason: "length" }),
 			true,
 		);
-		const rendered = component.render(80).join("\n");
+		const lines = component.render(80);
+		const thinking = lines.find((line) => stripAnsi(line).includes("Thinking..."));
+		const truncation = lines.find((line) => stripAnsi(line).includes("Response was truncated before completion."));
 
-		expect(rendered).toContain("Thinking...");
-		expect(rendered).toContain("Response was truncated before completion.");
+		expect(thinking).not.toContain(OSC133_ZONE_START);
+		expect(thinking).not.toContain(OSC133_ZONE_END);
+		expect(truncation).toContain(OSC133_ZONE_START);
+		expect(truncation).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
 	});
 
 	test("coalesces adjacent thinking blocks into one hidden thinking label", () => {

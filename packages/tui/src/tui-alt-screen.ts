@@ -162,9 +162,14 @@ interface SearchHighlightRange {
 	current: boolean;
 }
 
-interface SemanticPromptZone {
+interface SemanticPromptRange {
 	startRow: number;
 	endRow: number;
+}
+
+interface SemanticPromptZone {
+	startRow: number;
+	ranges: SemanticPromptRange[];
 }
 
 export interface TuiAltScreenOptions {
@@ -553,21 +558,53 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	private getSemanticPromptZones(lines: readonly string[]): SemanticPromptZone[] {
 		const zones: SemanticPromptZone[] = [];
-		let startRow: number | undefined;
+		let ranges: SemanticPromptRange[] = [];
+		let rangeStart: number | undefined;
+		const finishZone = () => {
+			if (ranges.length === 0) return;
+			zones.push({ startRow: ranges[0]!.startRow, ranges });
+			ranges = [];
+		};
+
 		for (let row = 0; row < lines.length; row++) {
 			const prefix = OSC133_ZONE_PREFIX.exec(lines[row] ?? "")?.[0];
 			if (!prefix) continue;
-			const markers = new Set(Array.from(prefix.matchAll(/\x1b\]133;([ABC])(?:\x07|\x1b\\)/g), (match) => match[1]));
-			if (markers.has("A")) {
-				if (startRow !== undefined) zones.push({ startRow, endRow: Math.max(startRow, row - 1) });
-				startRow = row;
+			let markers = Array.from(prefix.matchAll(/\x1b\]133;([ABC])(?:\x07|\x1b\\)/g), (match) => match[1]);
+			// Legacy single-line components can prepend B+C after A, yielding B+C+A in the final prefix.
+			if (
+				rangeStart === undefined &&
+				ranges.length === 0 &&
+				markers.indexOf("A") > markers.indexOf("C") &&
+				markers.includes("C")
+			) {
+				markers = ["A", ...(markers.includes("B") ? ["B"] : []), "C"];
 			}
-			if (startRow !== undefined && (markers.has("B") || markers.has("C"))) {
-				zones.push({ startRow, endRow: row });
-				startRow = undefined;
+			// B closes one selectable range; C closes the logical message after any excluded gaps.
+			for (const marker of markers) {
+				if (marker === "A") {
+					if (rangeStart !== undefined) {
+						ranges.push({ startRow: rangeStart, endRow: Math.max(rangeStart, row - 1) });
+						finishZone();
+					}
+					rangeStart = row;
+				} else if (marker === "B") {
+					if (rangeStart !== undefined) {
+						ranges.push({ startRow: rangeStart, endRow: row });
+						rangeStart = undefined;
+					}
+				} else {
+					if (rangeStart !== undefined) {
+						ranges.push({ startRow: rangeStart, endRow: row });
+						rangeStart = undefined;
+					}
+					finishZone();
+				}
 			}
 		}
-		if (startRow !== undefined) zones.push({ startRow, endRow: Math.max(startRow, lines.length - 1) });
+		if (rangeStart !== undefined) {
+			ranges.push({ startRow: rangeStart, endRow: Math.max(rangeStart, lines.length - 1) });
+		}
+		finishZone();
 		return zones;
 	}
 
@@ -1701,22 +1738,24 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			box.clip.x + box.clip.width,
 			scrollbarColumn ?? Number.POSITIVE_INFINITY,
 		);
-		const firstContentRow = Math.max(zone.startRow, scrollView.scrollTop + minRow - box.rect.y);
-		const lastContentRow = Math.min(zone.endRow, scrollView.scrollTop + maxRow - box.rect.y - 1);
-		if (lastContentRow < firstContentRow || maxColumn <= minColumn) return screen;
+		if (maxColumn <= minColumn) return screen;
 
 		const result = [...screen];
-		for (let contentRow = firstContentRow; contentRow <= lastContentRow; contentRow++) {
-			const row = box.rect.y + contentRow - scrollView.scrollTop;
-			const line = result[row] ?? "";
-			if (isImageLine(line)) continue;
-			const lineWidth = visibleWidth(line);
-			const before = sliceByColumn(line, 0, minColumn, true);
-			const selected = sliceByColumn(line, minColumn, Math.max(0, maxColumn - minColumn), true);
-			const selectedWidth = visibleWidth(selected);
-			const paddedSelection = selected + " ".repeat(Math.max(0, maxColumn - minColumn - selectedWidth));
-			const after = sliceByColumn(line, maxColumn, Math.max(0, lineWidth - maxColumn), true);
-			result[row] = `${before}${this.applyPromptSelectionStyle(paddedSelection)}${after}`;
+		for (const range of zone.ranges) {
+			const firstContentRow = Math.max(range.startRow, scrollView.scrollTop + minRow - box.rect.y);
+			const lastContentRow = Math.min(range.endRow, scrollView.scrollTop + maxRow - box.rect.y - 1);
+			for (let contentRow = firstContentRow; contentRow <= lastContentRow; contentRow++) {
+				const row = box.rect.y + contentRow - scrollView.scrollTop;
+				const line = result[row] ?? "";
+				if (isImageLine(line)) continue;
+				const lineWidth = visibleWidth(line);
+				const before = sliceByColumn(line, 0, minColumn, true);
+				const selected = sliceByColumn(line, minColumn, Math.max(0, maxColumn - minColumn), true);
+				const selectedWidth = visibleWidth(selected);
+				const paddedSelection = selected + " ".repeat(Math.max(0, maxColumn - minColumn - selectedWidth));
+				const after = sliceByColumn(line, maxColumn, Math.max(0, lineWidth - maxColumn), true);
+				result[row] = `${before}${this.applyPromptSelectionStyle(paddedSelection)}${after}`;
+			}
 		}
 		return result;
 	}

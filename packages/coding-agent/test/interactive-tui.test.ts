@@ -149,6 +149,34 @@ describe("createInteractiveTui", () => {
 		}
 	});
 
+	it("decorates transcript selection without replacing existing message colors", async () => {
+		initTheme("dark");
+		const previousKeybindings = getKeybindings();
+		setKeybindings(new KeybindingsManager());
+		const terminal = new RecordingTerminal(30, 2);
+		const ui = createInteractiveTui({
+			tuiMode: "fullscreen",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+		});
+		ui.addChild(
+			new Text("\x1b]133;A\x07\x1b[48;5;52mmessage\x1b[49m\n\x1b]133;B\x07\x1b]133;C\x07detail\nfiller", 0, 0),
+		);
+		ui.start();
+		try {
+			await terminal.waitForRender();
+			const eventCount = terminal.writes.length;
+			terminal.sendInput("\x0b");
+			await terminal.waitForRender();
+			const writes = terminal.writes.slice(eventCount).join("");
+			expect(writes).toContain("\x1b[48;5;52m\x1b[4;53mmessage\x1b[24;55m\x1b[49m");
+		} finally {
+			ui.stop();
+			setKeybindings(previousKeybindings);
+		}
+	});
+
 	it("replaces the renderer and restores the previous screen for resume-hint exits", async () => {
 		const terminal = new RecordingTerminal(40, 8);
 		const renderer = createInteractiveTui({
