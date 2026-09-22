@@ -319,10 +319,12 @@ describe("matchesKey", () => {
 			assert.strictEqual(parseKey("\n"), "enter");
 		});
 
-		it("should treat linefeed as shift+enter when kitty active", () => {
+		it("should treat linefeed only as shift+enter when kitty active", () => {
 			setKittyProtocolActive(true);
 			assert.strictEqual(matchesKey("\n", "shift+enter"), true);
 			assert.strictEqual(matchesKey("\n", "enter"), false);
+			assert.strictEqual(matchesKey("\n", "ctrl+j"), false);
+			assert.strictEqual(matchesKey("\x1b[106;5u", "ctrl+j"), true);
 			assert.strictEqual(parseKey("\n"), "shift+enter");
 			setKittyProtocolActive(false);
 		});

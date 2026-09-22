@@ -15,7 +15,7 @@ export interface ScrollViewOptions {
 }
 
 export interface ScrollViewScrollToOptions {
-	/** Keep follow-end disabled even when the target is the current content end. */
+	/** Keep follow-end disabled across later content and viewport reflow. */
 	disableFollow?: boolean;
 }
 
@@ -32,7 +32,7 @@ export class ScrollView extends Container {
 	private contentHeight = 0;
 	private currentViewportHeight = 0;
 	private followingEnd: boolean;
-	private followSuppressedAtEnd = false;
+	private followSuppressed = false;
 	private viewportPreserved = false;
 	private requestRenderCallback: (() => void) | undefined;
 	private transientScrollbarVisible = false;
@@ -64,6 +64,10 @@ export class ScrollView extends Container {
 		return this.followingEnd;
 	}
 
+	get isAtEnd(): boolean {
+		return this.currentScrollTop >= Math.max(0, this.contentHeight - this.currentViewportHeight);
+	}
+
 	get viewportHeight(): number {
 		return this.currentViewportHeight;
 	}
@@ -89,6 +93,14 @@ export class ScrollView extends Container {
 		if (scrollbar !== "auto") this.hideTransientScrollbar();
 		else if (this.scrollbarActive) this.markScrollbarActivity();
 		this.requestRenderCallback?.();
+	}
+
+	clearFollowSuppression(): void {
+		if (!this.followSuppressed) return;
+		this.followSuppressed = false;
+		const wasFollowingEnd = this.followingEnd;
+		this.followingEnd = this.followEnd && this.isAtEnd && !this.viewportPreserved;
+		if (this.followingEnd !== wasFollowingEnd) this.requestRenderCallback?.();
 	}
 
 	getContentWidth(width: number): number {
@@ -129,12 +141,12 @@ export class ScrollView extends Container {
 		const requested = Number.isFinite(scrollTop) ? Math.trunc(scrollTop) : this.currentScrollTop;
 		const maxScrollTop = Math.max(0, this.contentHeight - this.currentViewportHeight);
 		const next = Math.max(0, Math.min(maxScrollTop, requested));
-		const nextFollowSuppressedAtEnd = options.disableFollow === true && next === maxScrollTop;
-		const nextFollowingEnd = !nextFollowSuppressedAtEnd && this.followEnd && next === maxScrollTop;
+		const nextFollowSuppressed = options.disableFollow === true;
+		const nextFollowingEnd = !nextFollowSuppressed && this.followEnd && next === maxScrollTop;
 		if (
 			next === this.currentScrollTop &&
 			nextFollowingEnd === this.followingEnd &&
-			nextFollowSuppressedAtEnd === this.followSuppressedAtEnd &&
+			nextFollowSuppressed === this.followSuppressed &&
 			!this.viewportPreserved
 		) {
 			return;
@@ -142,16 +154,15 @@ export class ScrollView extends Container {
 		const moved = next !== this.currentScrollTop;
 		this.currentScrollTop = next;
 		this.followingEnd = nextFollowingEnd;
-		this.followSuppressedAtEnd = nextFollowSuppressedAtEnd;
+		this.followSuppressed = nextFollowSuppressed;
 		this.viewportPreserved = false;
 		if (moved) this.markScrollbarActivity();
 		this.requestRenderCallback?.();
 	}
 
 	preserveViewport(): void {
-		const changed = this.followingEnd || !this.followSuppressedAtEnd || !this.viewportPreserved;
+		const changed = this.followingEnd || !this.viewportPreserved;
 		this.followingEnd = false;
-		this.followSuppressedAtEnd = true;
 		this.viewportPreserved = true;
 		if (changed) this.requestRenderCallback?.();
 	}
@@ -164,22 +175,22 @@ export class ScrollView extends Container {
 		const next = Math.max(0, Math.min(maxScrollTop, start + requested));
 		const moved = next - start;
 		const wasFollowingEnd = this.followingEnd;
+		const wasViewportPreserved = this.viewportPreserved;
 		this.currentScrollTop = next;
-		this.followingEnd = this.followEnd && next === maxScrollTop;
-		this.followSuppressedAtEnd = false;
+		if (moved !== 0 && next === maxScrollTop) this.followSuppressed = false;
+		this.followingEnd = this.followEnd && next === maxScrollTop && !this.followSuppressed;
 		this.viewportPreserved = false;
 		if (moved !== 0) this.markScrollbarActivity();
-		if (moved !== 0 || this.followingEnd !== wasFollowingEnd) this.requestRenderCallback?.();
+		if (moved !== 0 || this.followingEnd !== wasFollowingEnd || wasViewportPreserved) this.requestRenderCallback?.();
 		return requested - moved;
 	}
 
 	scrollToStart(): void {
-		const changed =
-			this.currentScrollTop !== 0 ||
-			this.followingEnd !== (this.followEnd && this.contentHeight <= this.currentViewportHeight);
+		const nextFollowingEnd =
+			this.followEnd && this.contentHeight <= this.currentViewportHeight && !this.followSuppressed;
+		const changed = this.currentScrollTop !== 0 || this.followingEnd !== nextFollowingEnd || this.viewportPreserved;
 		this.currentScrollTop = 0;
-		this.followingEnd = this.followEnd && this.contentHeight <= this.currentViewportHeight;
-		this.followSuppressedAtEnd = false;
+		this.followingEnd = nextFollowingEnd;
 		this.viewportPreserved = false;
 		if (changed) {
 			this.markScrollbarActivity();
@@ -189,10 +200,14 @@ export class ScrollView extends Container {
 
 	scrollToEnd(): void {
 		const next = Math.max(0, this.contentHeight - this.currentViewportHeight);
-		const changed = this.currentScrollTop !== next || this.followingEnd !== this.followEnd;
+		const changed =
+			this.currentScrollTop !== next ||
+			this.followingEnd !== this.followEnd ||
+			this.followSuppressed ||
+			this.viewportPreserved;
 		this.currentScrollTop = next;
 		this.followingEnd = this.followEnd;
-		this.followSuppressedAtEnd = false;
+		this.followSuppressed = false;
 		this.viewportPreserved = false;
 		if (changed) {
 			this.markScrollbarActivity();
@@ -208,15 +223,8 @@ export class ScrollView extends Container {
 		if (this.followingEnd) this.currentScrollTop = maxScrollTop;
 		else if (this.viewportPreserved) this.currentScrollTop = Math.max(0, this.currentScrollTop);
 		else this.currentScrollTop = Math.max(0, Math.min(this.currentScrollTop, maxScrollTop));
-		if (!this.viewportPreserved && this.currentScrollTop < maxScrollTop) this.followSuppressedAtEnd = false;
-		if (
-			this.followEnd &&
-			this.currentScrollTop === maxScrollTop &&
-			!this.followSuppressedAtEnd &&
-			!this.viewportPreserved
-		) {
-			this.followingEnd = true;
-		}
+		this.followingEnd =
+			this.followEnd && this.currentScrollTop === maxScrollTop && !this.followSuppressed && !this.viewportPreserved;
 		if (this.contentHeight <= this.currentViewportHeight) this.hideTransientScrollbar();
 	}
 

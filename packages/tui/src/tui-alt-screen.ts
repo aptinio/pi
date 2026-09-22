@@ -72,7 +72,6 @@ const FOCUS_OUT = "\x1b[O";
 const BEGIN_SYNCHRONIZED_OUTPUT = "\x1b[?2026h";
 const END_SYNCHRONIZED_OUTPUT = "\x1b[?2026l";
 const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;
-const OSC133_PROMPT_START = /^\x1b\]133;A(?:\x07|\x1b\\)/;
 const PAGE_SCROLL_OVERLAP = 4;
 const ALT_WHEEL_SCROLL_MULTIPLIER = 5;
 const MAX_CACHED_OFFSCREEN_KITTY_IMAGES = 16;
@@ -165,6 +164,20 @@ interface SearchHighlightRange {
 	current: boolean;
 }
 
+interface SemanticPromptRange {
+	startRow: number;
+	endRow: number;
+}
+
+interface SemanticPromptZone {
+	startRow: number;
+	ranges: SemanticPromptRange[];
+}
+
+export interface PromptSelectionStyleContext {
+	readonly isLastLine: boolean;
+}
+
 export interface TuiAltScreenOptions {
 	/**
 	 * Logical lines moved for each mouse-wheel event (default: 1). `"auto"` accelerates fast wheel
@@ -179,6 +192,8 @@ export interface TuiAltScreenOptions {
 	searchCurrentMatchStyle?: (text: string) => string;
 	/** Style a transcript search navigation button. */
 	searchNavigationButtonStyle?: (text: string, hovered: boolean) => string;
+	/** Style a line of the semantic prompt selected by previous/next prompt navigation. */
+	promptSelectionStyle?: (text: string, context: PromptSelectionStyleContext) => string;
 	/**
 	 * Render a clickable jump-to-end label. It is centered on the last row of a follow-end
 	 * primary scroll view while that view is scrolled away from its end.
@@ -234,6 +249,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private scrollbarHover?: ScrollView;
 	private scrollToEndIndicatorRect?: ScrollToEndIndicatorRect;
 	private activeSearch?: ActiveSearch;
+	private selectedPromptOrdinal?: number;
 	private pressedUrl?: string;
 	private selectionDragged = false;
 	private mouseCapture?: TuiMouseDispatchTarget;
@@ -252,6 +268,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private readonly searchMatchStyle: (text: string) => string;
 	private readonly searchCurrentMatchStyle: (text: string) => string;
 	private readonly searchNavigationButtonStyle: (text: string, hovered: boolean) => string;
+	private readonly promptSelectionStyle: (text: string, context: PromptSelectionStyleContext) => string;
 	private readonly scrollToEndIndicator?: () => string;
 	private readonly openUrl?: (url: string) => void;
 	private readonly onMiddleClickPaste?: () => void;
@@ -281,6 +298,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.searchMatchStyle = options.searchMatchStyle ?? ((text) => `\x1b[4m${text}\x1b[24m`);
 		this.searchCurrentMatchStyle = options.searchCurrentMatchStyle ?? ((text) => `\x1b[1;7m${text}\x1b[22;27m`);
 		this.searchNavigationButtonStyle = options.searchNavigationButtonStyle ?? ((text) => text);
+		this.promptSelectionStyle = options.promptSelectionStyle ?? ((text) => `\x1b[7m${text}\x1b[27m`);
 		this.scrollToEndIndicator = options.scrollToEndIndicator;
 		this.openUrl = options.openUrl;
 		this.onMiddleClickPaste = options.onMiddleClickPaste;
@@ -336,8 +354,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	setLayoutRoot(component: Component | undefined): void {
 		if (this.layoutRoot === component) return;
+		this.getPrimaryScrollView().clearFollowSuppression();
 		this.layoutRoot = component;
 		this.currentLayout = undefined;
+		this.selectedPromptOrdinal = undefined;
 		this.requestRender();
 	}
 
@@ -354,6 +374,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	protected override beforeTerminalStart(): void {
+		this.getPrimaryScrollView().clearFollowSuppression();
 		this.stopSelectionAutoScroll();
 		this.selectionPressActive = false;
 		this.stopScrollbarHover();
@@ -369,6 +390,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.invalidate();
 		}
 		this.lastDocument = [];
+		this.selectedPromptOrdinal = undefined;
 		this.selectionAnchor = undefined;
 		this.selectionFocus = undefined;
 		this.selectionGranularity = "character";
@@ -497,8 +519,15 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	scrollBy(lines: number): void {
-		this.getPrimaryScrollView().scrollBy(lines);
+		const scrollView = this.getPrimaryScrollView();
+		scrollView.scrollBy(lines);
+		this.preservePromptSelectionFollowSuppression(scrollView);
 		this.requestRender();
+	}
+
+	private preservePromptSelectionFollowSuppression(scrollView: ScrollView): void {
+		if (this.selectedPromptOrdinal === undefined || scrollView !== this.getPrimaryScrollView()) return;
+		scrollView.scrollTo(scrollView.scrollTop, { disableFollow: true });
 	}
 
 	scrollToTop(): void {
@@ -507,8 +536,18 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	scrollToBottom(): void {
+		this.selectedPromptOrdinal = undefined;
 		this.getPrimaryScrollView().scrollToEnd();
 		this.requestRender();
+	}
+
+	clearPromptSelection(options: { followEnd?: boolean } = {}): void {
+		const hadSelection = this.selectedPromptOrdinal !== undefined;
+		this.selectedPromptOrdinal = undefined;
+		const scrollView = this.getPrimaryScrollView();
+		if (options.followEnd) scrollView.scrollToEnd();
+		else scrollView.clearFollowSuppression();
+		if (hadSelection || options.followEnd) this.requestRender();
 	}
 
 	private scrollToPrompt(direction: -1 | 1): void {
@@ -516,13 +555,81 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const scrollView = this.getPrimaryScrollView();
 		const lines = getScrollViewBox(this.currentLayout, scrollView)?.scrollContentLines;
 		if (!lines) return;
+		const zones = this.getSemanticPromptZones(lines);
+		if (zones.length === 0) return;
 
-		for (let row = scrollView.scrollTop + direction; row >= 0 && row < lines.length; row += direction) {
-			if (!OSC133_PROMPT_START.test(lines[row] ?? "")) continue;
-			scrollView.scrollTo(row);
-			this.requestRender();
-			return;
+		let targetOrdinal: number | undefined;
+		if (this.selectedPromptOrdinal !== undefined && this.selectedPromptOrdinal < zones.length) {
+			const candidate = this.selectedPromptOrdinal + direction;
+			if (candidate >= 0 && candidate < zones.length) targetOrdinal = candidate;
+		} else if (direction < 0) {
+			for (let index = zones.length - 1; index >= 0; index--) {
+				if (zones[index]!.startRow <= scrollView.scrollTop) {
+					targetOrdinal = index;
+					break;
+				}
+			}
+		} else {
+			targetOrdinal = zones.findIndex((zone) => zone.startRow > scrollView.scrollTop);
+			if (targetOrdinal < 0) targetOrdinal = undefined;
 		}
+		if (targetOrdinal === undefined) return;
+
+		this.selectedPromptOrdinal = targetOrdinal;
+		scrollView.scrollTo(zones[targetOrdinal]!.startRow, { disableFollow: true });
+		this.requestRender();
+	}
+
+	private getSemanticPromptZones(lines: readonly string[]): SemanticPromptZone[] {
+		const zones: SemanticPromptZone[] = [];
+		let ranges: SemanticPromptRange[] = [];
+		let rangeStart: number | undefined;
+		const finishZone = () => {
+			if (ranges.length === 0) return;
+			zones.push({ startRow: ranges[0]!.startRow, ranges });
+			ranges = [];
+		};
+
+		for (let row = 0; row < lines.length; row++) {
+			const prefix = OSC133_ZONE_PREFIX.exec(lines[row] ?? "")?.[0];
+			if (!prefix) continue;
+			let markers = Array.from(prefix.matchAll(/\x1b\]133;([ABC])(?:\x07|\x1b\\)/g), (match) => match[1]);
+			// Legacy single-line components can prepend B+C after A, yielding B+C+A in the final prefix.
+			if (
+				rangeStart === undefined &&
+				ranges.length === 0 &&
+				markers.indexOf("A") > markers.indexOf("C") &&
+				markers.includes("C")
+			) {
+				markers = ["A", ...(markers.includes("B") ? ["B"] : []), "C"];
+			}
+			// B closes one selectable range; C closes the logical message after any excluded gaps.
+			for (const marker of markers) {
+				if (marker === "A") {
+					if (rangeStart !== undefined) {
+						ranges.push({ startRow: rangeStart, endRow: Math.max(rangeStart, row - 1) });
+						finishZone();
+					}
+					rangeStart = row;
+				} else if (marker === "B") {
+					if (rangeStart !== undefined) {
+						ranges.push({ startRow: rangeStart, endRow: row });
+						rangeStart = undefined;
+					}
+				} else {
+					if (rangeStart !== undefined) {
+						ranges.push({ startRow: rangeStart, endRow: row });
+						rangeStart = undefined;
+					}
+					finishZone();
+				}
+			}
+		}
+		if (rangeStart !== undefined) {
+			ranges.push({ startRow: rangeStart, endRow: Math.max(rangeStart, lines.length - 1) });
+		}
+		finishZone();
+		return zones;
 	}
 
 	private toggleSearch(): void {
@@ -530,6 +637,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.closeSearch();
 			return;
 		}
+		this.clearPromptSelection();
 		const component = new AltScreenSearchComponent(
 			(query) => this.updateSearchQuery(query),
 			this.searchNavigationButtonStyle,
@@ -557,6 +665,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (!search) return;
 		this.activeSearch = undefined;
 		search.overlay?.hide();
+		if (this.selectedPromptOrdinal === undefined) this.getPrimaryScrollView().clearFollowSuppression();
 		this.requestRender();
 	}
 
@@ -783,13 +892,15 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			if (!isRelease) this.scrollBy(1);
 			return { consume: true };
 		}
-		if (keybindings.matches(data, "tui.altScreen.previousPrompt")) {
-			if (!isRelease) this.scrollToPrompt(-1);
-			return { consume: true };
-		}
-		if (keybindings.matches(data, "tui.altScreen.nextPrompt")) {
-			if (!isRelease) this.scrollToPrompt(1);
-			return { consume: true };
+		if (!this.activeSearch?.overlay?.isFocused()) {
+			if (keybindings.matches(data, "tui.altScreen.previousPrompt")) {
+				if (!isRelease) this.scrollToPrompt(-1);
+				return { consume: true };
+			}
+			if (keybindings.matches(data, "tui.altScreen.nextPrompt")) {
+				if (!isRelease) this.scrollToPrompt(1);
+				return { consume: true };
+			}
 		}
 		if (keybindings.matches(data, "tui.altScreen.top")) {
 			if (!isRelease) this.scrollToTop();
@@ -1007,13 +1118,19 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private routeWheel(event: WheelEvent, delta: number): void {
 		let remaining = delta;
 		const seen = new Set<ScrollView>();
+		const primary = this.getPrimaryScrollView();
+		let primaryScrolled = false;
 		for (const scrollView of this.currentLayout ? getScrollViewsAt(this.currentLayout, event.x, event.y) : []) {
 			seen.add(scrollView);
 			remaining = scrollView.scrollBy(remaining);
+			if (scrollView === primary) primaryScrolled = true;
 			if (remaining === 0 || scrollView.overscroll === "contain") break;
 		}
-		const primary = this.getPrimaryScrollView();
-		if (remaining !== 0 && !seen.has(primary)) primary.scrollBy(remaining);
+		if (remaining !== 0 && !seen.has(primary)) {
+			primary.scrollBy(remaining);
+			primaryScrolled = true;
+		}
+		if (primaryScrolled) this.preservePromptSelectionFollowSuppression(primary);
 		this.updateScrollbarHover(event.x, event.y);
 		this.requestRender();
 	}
@@ -1106,7 +1223,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const maxThumbOffset = geometry.trackHeight - geometry.thumbHeight;
 		const thumbOffset = Math.max(0, Math.min(maxThumbOffset, pointerY - geometry.trackTop - grabOffset));
 		const scrollTop = maxThumbOffset === 0 ? 0 : Math.round((thumbOffset / maxThumbOffset) * geometry.maxScrollTop);
-		scrollView.scrollTo(scrollTop);
+		scrollView.scrollTo(scrollTop, {
+			disableFollow: this.selectedPromptOrdinal !== undefined && scrollView === this.getPrimaryScrollView(),
+		});
 	}
 
 	private handleScrollbarMouseEvent(event: SgrMouseEvent): boolean {
@@ -1324,6 +1443,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			return;
 		}
 		const remaining = scrollView.scrollBy(direction);
+		this.preservePromptSelectionFollowSuppression(scrollView);
 		if (remaining === direction) {
 			this.stopSelectionAutoScroll();
 			return;
@@ -1597,6 +1717,73 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return result;
 	}
 
+	private applyPromptSelectionStyle(text: string, context: PromptSelectionStyleContext): string {
+		let result = "";
+		let plainStart = 0;
+		let index = 0;
+		while (index < text.length) {
+			const ansi = extractAnsiCode(text, index);
+			if (!ansi) {
+				index += 1;
+				continue;
+			}
+			if (index > plainStart) result += this.promptSelectionStyle(text.slice(plainStart, index), context);
+			result += ansi.code;
+			index += ansi.length;
+			plainStart = index;
+		}
+		if (plainStart < text.length) result += this.promptSelectionStyle(text.slice(plainStart), context);
+		return result;
+	}
+
+	private applyPromptSelection(screen: string[], layout: LayoutFrame): string[] {
+		if (this.selectedPromptOrdinal === undefined) return screen;
+		const scrollView = layout.primaryScrollView ?? this.implicitScrollView;
+		const box = getScrollViewBox(layout, scrollView);
+		const lines = box?.scrollContentLines;
+		if (!box || !lines) return screen;
+		const zone = this.getSemanticPromptZones(lines)[this.selectedPromptOrdinal];
+		if (!zone) {
+			this.selectedPromptOrdinal = undefined;
+			scrollView.clearFollowSuppression();
+			return screen;
+		}
+
+		const scrollbarColumn = getScrollbarGeometry(box)?.column;
+		const minRow = Math.max(0, box.rect.y, box.clip.y);
+		const maxRow = Math.min(screen.length, box.rect.y + box.rect.height, box.clip.y + box.clip.height);
+		const minColumn = Math.max(0, box.rect.x, box.clip.x);
+		const maxColumn = Math.min(
+			this.terminal.columns,
+			box.rect.x + box.rect.width,
+			box.clip.x + box.clip.width,
+			scrollbarColumn ?? Number.POSITIVE_INFINITY,
+		);
+		if (maxColumn <= minColumn) return screen;
+
+		const lastSelectedRow = zone.ranges[zone.ranges.length - 1]!.endRow;
+		const result = [...screen];
+		for (const range of zone.ranges) {
+			const firstContentRow = Math.max(range.startRow, scrollView.scrollTop + minRow - box.rect.y);
+			const lastContentRow = Math.min(range.endRow, scrollView.scrollTop + maxRow - box.rect.y - 1);
+			for (let contentRow = firstContentRow; contentRow <= lastContentRow; contentRow++) {
+				const row = box.rect.y + contentRow - scrollView.scrollTop;
+				const line = result[row] ?? "";
+				if (isImageLine(line)) continue;
+				const lineWidth = visibleWidth(line);
+				const before = sliceByColumn(line, 0, minColumn, true);
+				const selected = sliceByColumn(line, minColumn, Math.max(0, maxColumn - minColumn), true);
+				const selectedWidth = visibleWidth(selected);
+				const paddedSelection = selected + " ".repeat(Math.max(0, maxColumn - minColumn - selectedWidth));
+				const after = sliceByColumn(line, maxColumn, Math.max(0, lineWidth - maxColumn), true);
+				result[row] = `${before}${this.applyPromptSelectionStyle(paddedSelection, {
+					isLastLine: contentRow === lastSelectedRow,
+				})}${after}`;
+			}
+		}
+		return result;
+	}
+
 	private applySelectionHighlight(text: string): string {
 		let result = "\x1b[7m";
 		let index = 0;
@@ -1670,7 +1857,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private compositeScrollToEndIndicator(screen: string[], layout: LayoutFrame, width: number): string[] {
 		this.scrollToEndIndicatorRect = undefined;
 		const scrollView = layout.primaryScrollView ?? this.implicitScrollView;
-		if (!this.scrollToEndIndicator || !scrollView.followEnd || scrollView.isFollowingEnd) return screen;
+		if (!this.scrollToEndIndicator || !scrollView.followEnd || scrollView.isFollowingEnd || scrollView.isAtEnd) {
+			return screen;
+		}
 		const box = getScrollViewBox(layout, scrollView);
 		const clip = box?.clip;
 		if (!clip || clip.width <= 0 || clip.height <= 0) return screen;
@@ -1715,6 +1904,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			nextLayout = renderLayoutFrame(root, width, height, () => this.requestRender());
 		}
 		let screen = nextLayout.lines.map((line) => line.replace(OSC133_ZONE_PREFIX, ""));
+		screen = this.applyPromptSelection(screen, nextLayout);
 		screen = this.applySearchHighlights(screen, nextLayout);
 		screen = this.compositeScrollToEndIndicator(screen, nextLayout, width);
 		screen = this.compositeOverlays(screen, width, height);
