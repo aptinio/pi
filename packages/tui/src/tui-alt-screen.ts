@@ -173,7 +173,6 @@ interface SemanticPromptZone {
 }
 
 export interface PromptSelectionStyleContext {
-	readonly isFirstLine: boolean;
 	readonly isLastLine: boolean;
 }
 
@@ -1745,7 +1744,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		);
 		if (maxColumn <= minColumn) return screen;
 
-		const firstSelectedRow = zone.ranges[0]!.startRow;
 		const lastSelectedRow = zone.ranges[zone.ranges.length - 1]!.endRow;
 		const result = [...screen];
 		for (const range of zone.ranges) {
@@ -1762,7 +1760,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				const paddedSelection = selected + " ".repeat(Math.max(0, maxColumn - minColumn - selectedWidth));
 				const after = sliceByColumn(line, maxColumn, Math.max(0, lineWidth - maxColumn), true);
 				result[row] = `${before}${this.applyPromptSelectionStyle(paddedSelection, {
-					isFirstLine: contentRow === firstSelectedRow,
 					isLastLine: contentRow === lastSelectedRow,
 				})}${after}`;
 			}

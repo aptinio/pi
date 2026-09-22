@@ -7,8 +7,6 @@ import { theme } from "./theme/theme.ts";
 
 const PROMPT_SELECTION_UNDERLINE_START = "\x1b[4m";
 const PROMPT_SELECTION_UNDERLINE_END = "\x1b[24m";
-const PROMPT_SELECTION_OVERLINE_START = "\x1b[53m";
-const PROMPT_SELECTION_OVERLINE_END = "\x1b[55m";
 
 export interface InteractiveTuiOptions {
 	readonly tuiMode: "regular" | "fullscreen";
@@ -32,11 +30,8 @@ export function createInteractiveTui(options: InteractiveTuiOptions): TuiMainScr
 			searchMatchStyle: (text) => theme.underline(styleSearchMatch(text)),
 			searchCurrentMatchStyle: (text) => theme.bold(theme.inverse(styleSearchMatch(text))),
 			searchNavigationButtonStyle: (text, hovered) => (hovered ? theme.underline(text) : text),
-			promptSelectionStyle: (text, { isFirstLine, isLastLine }) => {
-				const start = `${isLastLine ? PROMPT_SELECTION_UNDERLINE_START : ""}${isFirstLine ? PROMPT_SELECTION_OVERLINE_START : ""}`;
-				const end = `${isFirstLine ? PROMPT_SELECTION_OVERLINE_END : ""}${isLastLine ? PROMPT_SELECTION_UNDERLINE_END : ""}`;
-				return `${start}${text}${end}`;
-			},
+			promptSelectionStyle: (text, { isLastLine }) =>
+				isLastLine ? `${PROMPT_SELECTION_UNDERLINE_START}${text}${PROMPT_SELECTION_UNDERLINE_END}` : text,
 			scrollToEndIndicator: () => {
 				const shortcut = keyDisplayText("tui.altScreen.bottom");
 				const label = ` ↓ Jump to latest message${shortcut ? ` · ${shortcut}` : ""} `;

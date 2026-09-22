@@ -149,7 +149,7 @@ describe("createInteractiveTui", () => {
 		}
 	});
 
-	it("decorates only transcript selection boundaries without replacing message colors", async () => {
+	it("underlines only the last transcript selection line without replacing message colors", async () => {
 		initTheme("dark");
 		const previousKeybindings = getKeybindings();
 		setKeybindings(new KeybindingsManager());
@@ -176,19 +176,23 @@ describe("createInteractiveTui", () => {
 		ui.start();
 		try {
 			await terminal.waitForRender();
-			const eventCount = terminal.writes.length;
 			terminal.sendInput("\x0b");
 			await terminal.waitForRender();
+			const eventCount = terminal.writes.length;
+			ui.renderNow(true);
 			const writes = terminal.writes.slice(eventCount).join("");
-			expect(writes).toContain("\x1b[48;5;52m\x1b[53mmessage\x1b[55m\x1b[49m");
+			expect(writes).toContain("\x1b[48;5;52mmessage\x1b[49m");
+			expect(writes).not.toContain("\x1b[53m");
 			expect(writes).toContain("\x1b[2;1H\x1b[2Kmiddle");
 			expect(writes).toMatch(/\x1b\[4mdetail +\x1b\[24m/);
 
-			const nextEventCount = terminal.writes.length;
 			terminal.sendInput("\x1b[106;5u");
 			await terminal.waitForRender();
+			const nextEventCount = terminal.writes.length;
+			ui.renderNow(true);
 			const nextWrites = terminal.writes.slice(nextEventCount).join("");
-			expect(nextWrites).toMatch(/\x1b\[4m\x1b\[53msingle line +\x1b\[55m\x1b\[24m/);
+			expect(nextWrites).toMatch(/\x1b\[4msingle line +\x1b\[24m/);
+			expect(nextWrites).not.toContain("\x1b[53m");
 		} finally {
 			ui.stop();
 			setKeybindings(previousKeybindings);
