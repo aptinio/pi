@@ -46,6 +46,7 @@ function createTreeUI() {
 		// Dispose newly created indicators so a failing regression cannot leak spinner timers.
 		showStatusIndicator: vi.fn((indicator: StatusIndicator) => indicator.dispose()),
 		clearStatusIndicator: vi.fn(),
+		clearTranscriptPromptSelection: vi.fn(),
 		restoreQueuedMessagesToEditor: vi.fn(),
 		renderInitialMessages: vi.fn(),
 		showStatus: vi.fn(),
@@ -104,6 +105,7 @@ describe("InteractiveMode tree navigation availability", () => {
 			summarize: false,
 			customInstructions: undefined,
 		});
+		expect(ui.clearTranscriptPromptSelection).toHaveBeenCalledTimes(1);
 		expect(ui.showError).not.toHaveBeenCalled();
 	});
 
@@ -120,6 +122,7 @@ describe("InteractiveMode tree navigation availability", () => {
 
 		expect(ui.session.abort).toHaveBeenCalledOnce();
 		expect(ui.session.navigateTree).toHaveBeenCalledOnce();
+		expect(ui.clearTranscriptPromptSelection).toHaveBeenCalledTimes(1);
 		expect(ui.showError).not.toHaveBeenCalled();
 	});
 

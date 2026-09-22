@@ -32,10 +32,10 @@ describe("Windows keybinding defaults", () => {
 			nativeWindows ? "ctrl+z" : windowsKeybindings ? "alt+z" : "ctrl+-",
 		);
 		expect(KEYBINDINGS["tui.altScreen.previousPrompt"].defaultKeys).toEqual(
-			windowsKeybindings ? "ctrl+up" : ["ctrl+shift+up", "ctrl+up"],
+			windowsKeybindings ? ["ctrl+k", "ctrl+up"] : ["ctrl+k", "ctrl+shift+up", "ctrl+up"],
 		);
 		expect(KEYBINDINGS["tui.altScreen.nextPrompt"].defaultKeys).toEqual(
-			windowsKeybindings ? "ctrl+down" : ["ctrl+shift+down", "ctrl+down"],
+			windowsKeybindings ? ["ctrl+j", "ctrl+down"] : ["ctrl+j", "ctrl+shift+down", "ctrl+down"],
 		);
 		expect(KEYBINDINGS["app.message.dequeue"].defaultKeys).toBe(windowsKeybindings ? "alt+q" : "alt+up");
 	});

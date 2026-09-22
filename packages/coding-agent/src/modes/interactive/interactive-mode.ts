@@ -2120,6 +2120,7 @@ export class InteractiveMode {
 						return { cancelled: true };
 					}
 
+					this.clearTranscriptPromptSelection();
 					this.chatContainer.clear();
 					this.renderInitialMessages();
 					if (result.editorText && !this.editor.getText().trim()) {
@@ -2319,6 +2320,7 @@ export class InteractiveMode {
 	}
 
 	private renderCurrentSessionState(): void {
+		this.clearTranscriptPromptSelection();
 		this.loadedResourcesContainer.clear();
 		this.chatContainer.clear();
 		this.pendingMessagesContainer.clear();
@@ -3458,6 +3460,7 @@ export class InteractiveMode {
 				this.editor.addToHistory?.(text);
 				this.editor.setText("");
 				await this.session.prompt(text, { streamingBehavior: "steer" });
+				this.clearTranscriptPromptSelection(true);
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();
 				return;
@@ -3473,6 +3476,7 @@ export class InteractiveMode {
 				this.pendingUserInputs.push(text);
 			}
 			this.editor.addToHistory?.(text);
+			this.clearTranscriptPromptSelection(true);
 		};
 	}
 
@@ -3542,6 +3546,7 @@ export class InteractiveMode {
 				} else if (event.entry.type === "compaction") {
 					const entries = this.sessionManager.buildContextEntries();
 					if (entries[0]?.id !== event.entry.id) break;
+					this.clearTranscriptPromptSelection();
 					this.chatContainer.clear();
 					const branch = this.sessionManager.getBranch();
 					const compactionIndex = branch.findIndex((entry) => entry.id === event.entry.id);
@@ -3788,6 +3793,7 @@ export class InteractiveMode {
 					if (entries[0]?.type !== "compaction") {
 						throw new Error("Completed compaction is missing from the session context");
 					}
+					this.clearTranscriptPromptSelection();
 					this.chatContainer.clear();
 					// The latest compaction is prepended for model context; append it below at its chronological position.
 					this.renderSessionEntries(entries.slice(1));
@@ -4371,7 +4377,14 @@ export class InteractiveMode {
 		});
 	}
 
+	private clearTranscriptPromptSelection(followEnd = false): void {
+		if (TuiLayouts.isViewportTUI(this.renderer)) {
+			this.renderer.clearPromptSelection({ followEnd });
+		}
+	}
+
 	private rebuildChatFromMessages(): void {
+		this.clearTranscriptPromptSelection();
 		this.chatContainer.clear();
 		this.renderSessionEntries(this.sessionManager.buildContextEntries());
 	}
@@ -4608,6 +4621,7 @@ export class InteractiveMode {
 			this.editor.addToHistory?.(text);
 			this.editor.setText("");
 			await this.session.prompt(text, { streamingBehavior: "followUp" });
+			this.clearTranscriptPromptSelection(true);
 			this.updatePendingMessagesDisplay();
 			this.ui.requestRender();
 		}
@@ -4880,6 +4894,7 @@ export class InteractiveMode {
 		this.compactionQueuedMessages.push({ text, mode });
 		this.editor.addToHistory?.(text);
 		this.editor.setText("");
+		this.clearTranscriptPromptSelection(true);
 		this.updatePendingMessagesDisplay();
 		this.showStatus("Queued message for after compaction");
 	}
@@ -5782,6 +5797,7 @@ export class InteractiveMode {
 						}
 
 						// Update UI
+						this.clearTranscriptPromptSelection();
 						this.chatContainer.clear();
 						this.renderInitialMessages();
 						if (result.editorText && !this.editor.getText().trim()) {
