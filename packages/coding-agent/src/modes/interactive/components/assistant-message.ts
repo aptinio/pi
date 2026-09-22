@@ -15,6 +15,35 @@ import { createMarkdownTransform } from "./markdown-transform.ts";
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
+const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;
+
+// Each visible answer segment is one selectable range. The parent appends C to the last range that renders.
+class SemanticPromptSegment extends Container {
+	constructor(content: Component) {
+		super();
+		this.addChild(content);
+	}
+
+	private zoneLines?: { source: readonly string[]; lines: string[] };
+
+	override render(width: number): readonly string[] {
+		const lines = super.render(width);
+		if (lines.length === 0) return lines;
+
+		// Container output is shared across frames; copy it once per change instead of mutating it.
+		if (this.zoneLines?.source !== lines) {
+			const zoned = [...lines];
+			if (zoned.length === 1) {
+				zoned[0] = OSC133_ZONE_START + OSC133_ZONE_END + zoned[0];
+			} else {
+				zoned[0] = OSC133_ZONE_START + zoned[0];
+				zoned[zoned.length - 1] = OSC133_ZONE_END + zoned[zoned.length - 1];
+			}
+			this.zoneLines = { source: lines, lines: zoned };
+		}
+		return this.zoneLines.lines;
+	}
+}
 
 /**
  * A Markdown block of the last update. The next update reuses it at the same position for the same kind of content, so
@@ -36,7 +65,6 @@ export class AssistantMessageComponent extends Container {
 	private outputPad: number;
 	private markdownTransformers: readonly MarkdownTransformer[];
 	private lastMessage?: AssistantMessage;
-	private hasToolCalls = false;
 	private isStreaming = false;
 	private messageId?: string;
 	private timestamp?: string;
@@ -106,15 +134,17 @@ export class AssistantMessageComponent extends Container {
 
 	override render(width: number): readonly string[] {
 		const lines = super.render(width);
-		if (this.hasToolCalls || lines.length === 0) {
-			return lines;
-		}
 
 		// Container output is shared across frames; copy it once per change instead of mutating it.
 		if (this.zoneLines?.source !== lines) {
 			const zoned = [...lines];
-			zoned[0] = OSC133_ZONE_START + zoned[0];
-			zoned[zoned.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + zoned[zoned.length - 1];
+			// Thinking and empty transformed segments have no markers, so finalize the last rendered answer range.
+			for (let index = zoned.length - 1; index >= 0; index--) {
+				const prefix = OSC133_ZONE_PREFIX.exec(zoned[index] ?? "")?.[0];
+				if (!prefix?.includes(OSC133_ZONE_END)) continue;
+				zoned[index] = prefix + OSC133_ZONE_FINAL + zoned[index]!.slice(prefix.length);
+				break;
+			}
 			this.zoneLines = { source: lines, lines: zoned };
 		}
 		return this.zoneLines.lines;
@@ -147,6 +177,10 @@ export class AssistantMessageComponent extends Container {
 			}
 			this.contentContainer.addChild(child);
 		};
+		const hasToolCalls = message.content.some((c) => c.type === "toolCall");
+		const addAssistantContent = (content: Component) => {
+			this.contentContainer.addChild(new SemanticPromptSegment(content));
+		};
 
 		// Render content in order
 		let thinkingRunIndex = 0;
@@ -157,19 +191,21 @@ export class AssistantMessageComponent extends Container {
 				// Set paddingY=0 to avoid extra spacing before tool executions
 				const text = formatTextWithCitations(content);
 				addVisibleChild(
-					markdownBlock(
-						"text",
-						text,
-						() =>
-							new Markdown(text, this.outputPad, 0, this.markdownTheme, undefined, {
-								transform: createMarkdownTransform(
-									"assistant",
-									() => this.isStreaming,
-									this.markdownTransformers,
-									this.messageId,
-									this.timestamp,
-								),
-							}),
+					new SemanticPromptSegment(
+						markdownBlock(
+							"text",
+							text,
+							() =>
+								new Markdown(text, this.outputPad, 0, this.markdownTheme, undefined, {
+									transform: createMarkdownTransform(
+										"assistant",
+										() => this.isStreaming,
+										this.markdownTransformers,
+										this.messageId,
+										this.timestamp,
+									),
+								}),
+						),
 					),
 				);
 			} else if (content.type === "thinking") {
@@ -240,11 +276,9 @@ export class AssistantMessageComponent extends Container {
 		// Check if incomplete/failed - show after partial content.
 		// For aborted/error tool calls, tool execution components show the error.
 		// Length stops can happen before a tool call is complete, so surface them here too.
-		const hasToolCalls = message.content.some((c) => c.type === "toolCall");
-		this.hasToolCalls = hasToolCalls;
 		if (message.stopReason === "length") {
 			this.contentContainer.addChild(new Spacer(1));
-			this.contentContainer.addChild(
+			addAssistantContent(
 				new Text(theme.fg("error", "Response was truncated before completion."), this.outputPad, 0),
 			);
 		} else if (!hasToolCalls) {
@@ -254,11 +288,11 @@ export class AssistantMessageComponent extends Container {
 						? message.errorMessage
 						: "Operation aborted";
 				this.contentContainer.addChild(new Spacer(1));
-				this.contentContainer.addChild(new Text(theme.fg("error", abortMessage), this.outputPad, 0));
+				addAssistantContent(new Text(theme.fg("error", abortMessage), this.outputPad, 0));
 			} else if (message.stopReason === "error") {
 				const errorMsg = message.errorMessage || "Unknown error";
 				this.contentContainer.addChild(new Spacer(1));
-				this.contentContainer.addChild(new Text(theme.fg("error", `Error: ${errorMsg}`), this.outputPad, 0));
+				addAssistantContent(new Text(theme.fg("error", `Error: ${errorMsg}`), this.outputPad, 0));
 			}
 		}
 	}
