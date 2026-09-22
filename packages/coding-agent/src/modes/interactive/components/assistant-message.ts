@@ -49,7 +49,6 @@ export class AssistantMessageComponent extends Container {
 	private outputPad: number;
 	private markdownTransformers: readonly MarkdownTransformer[];
 	private lastMessage?: AssistantMessage;
-	private hasToolCalls = false;
 	private isStreaming = false;
 	private thinkingVisibilityOverrides = new Map<number, boolean>();
 
@@ -109,7 +108,6 @@ export class AssistantMessageComponent extends Container {
 
 	override render(width: number): string[] {
 		const lines = super.render(width);
-		if (this.hasToolCalls) return lines;
 
 		// Thinking and empty transformed segments have no markers, so finalize the last rendered answer range.
 		for (let index = lines.length - 1; index >= 0; index--) {
@@ -131,9 +129,9 @@ export class AssistantMessageComponent extends Container {
 		const hasVisibleContent = message.content.some(
 			(c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()),
 		);
-		this.hasToolCalls = message.content.some((c) => c.type === "toolCall");
+		const hasToolCalls = message.content.some((c) => c.type === "toolCall");
 		const addAssistantContent = (content: Component) => {
-			this.contentContainer.addChild(this.hasToolCalls ? content : new SemanticPromptSegment(content));
+			this.contentContainer.addChild(new SemanticPromptSegment(content));
 		};
 
 		if (hasVisibleContent) {
@@ -219,7 +217,7 @@ export class AssistantMessageComponent extends Container {
 			addAssistantContent(
 				new Text(theme.fg("error", "Response was truncated before completion."), this.outputPad, 0),
 			);
-		} else if (!this.hasToolCalls) {
+		} else if (!hasToolCalls) {
 			if (message.stopReason === "aborted") {
 				const abortMessage =
 					message.errorMessage && message.errorMessage !== "Request was aborted"

@@ -112,14 +112,57 @@ describe("AssistantMessageComponent", () => {
 		expect(stripAnsi(lines.join("\n"))).not.toContain("removed answer");
 	});
 
-	test("does not add OSC 133 zone markers when assistant message contains tool calls", () => {
+	test("groups visible assistant text ranges in tool-bearing messages", () => {
 		initTheme("dark");
 
 		const component = new AssistantMessageComponent(
 			createAssistantMessage([
-				{ type: "text", text: "calling tool" },
+				{ type: "text", text: "before tool" },
+				{ type: "toolCall", id: "tool-1", name: "read", arguments: { path: "file.txt" } },
+				{ type: "thinking", thinking: "private reasoning" },
+				{ type: "text", text: "after tool" },
+			]),
+		);
+		const lines = component.render(60);
+		const beforeTool = lines.find((line) => stripAnsi(line).includes("before tool"));
+		const thinking = lines.find((line) => stripAnsi(line).includes("private reasoning"));
+		const afterTool = lines.find((line) => stripAnsi(line).includes("after tool"));
+
+		expect(beforeTool).toContain(OSC133_ZONE_START);
+		expect(beforeTool).toContain(OSC133_ZONE_END);
+		expect(beforeTool).not.toContain(OSC133_ZONE_FINAL);
+		expect(thinking).toBeDefined();
+		expect(thinking).not.toContain(OSC133_ZONE_START);
+		expect(thinking).not.toContain(OSC133_ZONE_END);
+		expect(thinking).not.toContain(OSC133_ZONE_FINAL);
+		expect(afterTool).toBeDefined();
+		expect(afterTool).toContain(OSC133_ZONE_START);
+		expect(afterTool).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
+	});
+
+	test("keeps assistant text marked when a streaming message gains a tool call", () => {
+		initTheme("dark");
+		const component = new AssistantMessageComponent();
+		const textContent = { type: "text" as const, text: "calling tool" };
+
+		component.updateContent(createAssistantMessage([textContent]), true);
+		expect(component.render(60).join("\n")).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
+
+		component.updateContent(
+			createAssistantMessage([
+				textContent,
 				{ type: "toolCall", id: "tool-1", name: "read", arguments: { path: "file.txt" } },
 			]),
+			true,
+		);
+		expect(component.render(60).join("\n")).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
+	});
+
+	test("does not create a semantic zone for tool-call-only assistant messages", () => {
+		initTheme("dark");
+
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([{ type: "toolCall", id: "tool-1", name: "read", arguments: { path: "file.txt" } }]),
 		);
 		const rendered = component.render(60).join("\n");
 
