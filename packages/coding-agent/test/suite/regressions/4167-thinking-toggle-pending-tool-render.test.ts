@@ -6,11 +6,14 @@ import type { AgentSessionEvent } from "../../../src/core/agent-session.ts";
 import type { SessionEntry } from "../../../src/core/session-manager.ts";
 import type { ToolExecutionComponent } from "../../../src/modes/interactive/components/tool-execution.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
-import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";
+import { getMarkdownTheme, initTheme } from "../../../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../../src/utils/ansi.ts";
 
 const TOOL_CALL_ID = "tool-4167";
 const TOOL_NAME = "slow_tool";
+const OSC133_ZONE_START = "\x1b]133;A\x07";
+const OSC133_ZONE_END = "\x1b]133;B\x07";
+const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 
 const EMPTY_USAGE: Usage = {
 	input: 0,
@@ -46,13 +49,24 @@ type RenderSessionContextThis = {
 	sessionManager: { getCwd(): string; getEntries(): SessionEntry[] };
 	session: { retryAttempt: number; modelRegistry: { find(provider: string, modelId: string): undefined } };
 	toolOutputExpanded: boolean;
+	hideThinkingBlock: boolean;
+	hiddenThinkingLabel: string;
+	outputPad: number;
 	isInitialized: boolean;
 	updateEditorBorderColor(): void;
+	getMarkdownThemeWithSettings(): ReturnType<typeof getMarkdownTheme>;
+	getMarkdownTransformers(): [];
 	getRegisteredToolDefinition(toolName: string): undefined;
 	maybeShowAssistantDiagnostics(message: AssistantMessage): void;
 	addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void;
 	renderSessionItems: RenderSessionItems;
 };
+
+type AddMessageToChat = (
+	this: RenderSessionContextThis,
+	message: AgentMessage,
+	options?: { populateHistory?: boolean },
+) => void;
 
 type RenderSessionEntries = (
 	this: RenderSessionContextThis,
@@ -77,8 +91,13 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 		sessionManager: { getCwd: () => process.cwd(), getEntries: () => [] },
 		session: { retryAttempt: 0, modelRegistry: { find: () => undefined } },
 		toolOutputExpanded: false,
+		hideThinkingBlock: false,
+		hiddenThinkingLabel: "Thinking...",
+		outputPad: 1,
 		isInitialized: true,
 		updateEditorBorderColor: vi.fn(),
+		getMarkdownThemeWithSettings: getMarkdownTheme,
+		getMarkdownTransformers: () => [],
 		getRegisteredToolDefinition: (_toolName: string) => undefined,
 		maybeShowAssistantDiagnostics: vi.fn(),
 		renderSessionItems: (InteractiveMode.prototype as unknown as { renderSessionItems: RenderSessionItems })
@@ -106,6 +125,18 @@ function createAssistantToolCallMessage(): AssistantMessage {
 		usage: EMPTY_USAGE,
 		stopReason: "toolUse",
 		timestamp: Date.now(),
+	};
+}
+
+function createAssistantTextAndToolCallMessage(): AssistantMessage {
+	const message = createAssistantToolCallMessage();
+	return {
+		...message,
+		content: [
+			{ type: "text", text: "VISIBLE_COMMENTARY" },
+			{ type: "thinking", thinking: "PRIVATE_REASONING" },
+			...message.content,
+		],
 	};
 }
 
@@ -142,6 +173,33 @@ function renderChat(container: Container): string {
 describe("InteractiveMode.renderSessionEntries", () => {
 	beforeAll(() => {
 		initTheme("dark");
+	});
+
+	test("restores semantic assistant text without marking thinking or tool rows", () => {
+		const fakeThis = createFakeInteractiveModeThis();
+		const addMessageToChat = (InteractiveMode.prototype as unknown as { addMessageToChat: AddMessageToChat })
+			.addMessageToChat;
+		fakeThis.addMessageToChat = (message, options) => addMessageToChat.call(fakeThis, message, options);
+		const renderSessionEntries = (
+			InteractiveMode.prototype as unknown as { renderSessionEntries: RenderSessionEntries }
+		).renderSessionEntries;
+
+		renderSessionEntries.call(fakeThis, createSessionEntries([createAssistantTextAndToolCallMessage()]));
+
+		const lines = fakeThis.chatContainer.render(120);
+		const commentary = lines.find((line) => stripAnsi(line).includes("VISIBLE_COMMENTARY"));
+		const thinking = lines.find((line) => stripAnsi(line).includes("PRIVATE_REASONING"));
+		const tool = lines.find((line) => stripAnsi(line).includes(TOOL_NAME));
+		expect(commentary).toContain(OSC133_ZONE_START);
+		expect(commentary).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
+		expect(thinking).toBeDefined();
+		expect(thinking).not.toContain(OSC133_ZONE_START);
+		expect(thinking).not.toContain(OSC133_ZONE_END);
+		expect(thinking).not.toContain(OSC133_ZONE_FINAL);
+		expect(tool).toBeDefined();
+		expect(tool).not.toContain(OSC133_ZONE_START);
+		expect(tool).not.toContain(OSC133_ZONE_END);
+		expect(tool).not.toContain(OSC133_ZONE_FINAL);
 	});
 
 	test("keeps unresolved rendered tool calls registered for live completion events", async () => {

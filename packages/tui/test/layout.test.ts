@@ -207,10 +207,85 @@ describe("viewport layout", () => {
 		const geometry = getScrollbarGeometry(preservedFrame.root);
 		assert.ok(geometry);
 		assert.strictEqual(geometry.thumbTop, geometry.trackTop + geometry.trackHeight - geometry.thumbHeight);
+		assert.strictEqual(scrollView.isAtEnd, true);
 
 		scrollView.scrollBy(1);
 		renderLayoutFrame(scrollView, 10, 4, () => {});
 		assert.strictEqual(scrollView.scrollTop, 2);
+		assert.strictEqual(scrollView.isFollowingEnd, true);
+	});
+
+	it("keeps preserved viewports independent from persistent follow suppression", () => {
+		const createPreservedSuppressedView = () => {
+			let lineCount = 8;
+			const content = {
+				render: () => Array.from({ length: lineCount }, (_, index) => `line ${index + 1}`),
+				invalidate: () => {},
+			};
+			const scrollView = new ScrollView(content, { follow: "end" });
+			renderLayoutFrame(scrollView, 10, 3, () => {});
+			scrollView.scrollTo(scrollView.scrollTop, { disableFollow: true });
+			scrollView.preserveViewport();
+			lineCount = 6;
+			renderLayoutFrame(scrollView, 10, 3, () => {});
+			return scrollView;
+		};
+
+		const cleared = createPreservedSuppressedView();
+		cleared.clearFollowSuppression();
+		assert.strictEqual(cleared.scrollTop, 5);
+		assert.strictEqual(cleared.isFollowingEnd, false);
+		cleared.scrollBy(1);
+		assert.strictEqual(cleared.scrollTop, 3);
+		assert.strictEqual(cleared.isFollowingEnd, true);
+
+		const scrolled = createPreservedSuppressedView();
+		scrolled.scrollBy(1);
+		assert.strictEqual(scrolled.scrollTop, 3);
+		assert.strictEqual(scrolled.isFollowingEnd, false);
+		scrolled.clearFollowSuppression();
+		assert.strictEqual(scrolled.isFollowingEnd, true);
+	});
+
+	it("keeps follow-end suppressed across content and viewport reflow", () => {
+		let lineCount = 8;
+		const content = {
+			render: () => Array.from({ length: lineCount }, (_, index) => `line ${index + 1}`),
+			invalidate: () => {},
+		};
+		const scrollView = new ScrollView(content, { follow: "end", primary: true });
+		renderLayoutFrame(scrollView, 10, 3, () => {});
+		assert.strictEqual(scrollView.isAtEnd, true);
+
+		scrollView.scrollTo(20, { disableFollow: true });
+		assert.strictEqual(scrollView.scrollTop, 5);
+		assert.strictEqual(scrollView.isFollowingEnd, false);
+		assert.strictEqual(scrollView.isAtEnd, true);
+		assert.strictEqual(scrollView.scrollBy(1), 1);
+		assert.strictEqual(scrollView.isFollowingEnd, false);
+
+		lineCount = 9;
+		renderLayoutFrame(scrollView, 10, 3, () => {});
+		assert.strictEqual(scrollView.scrollTop, 5);
+		assert.strictEqual(scrollView.isFollowingEnd, false);
+		assert.strictEqual(scrollView.isAtEnd, false);
+
+		lineCount = 8;
+		renderLayoutFrame(scrollView, 10, 3, () => {});
+		assert.strictEqual(scrollView.isFollowingEnd, false);
+		assert.strictEqual(scrollView.isAtEnd, true);
+
+		renderLayoutFrame(scrollView, 10, 4, () => {});
+		assert.strictEqual(scrollView.scrollTop, 4);
+		assert.strictEqual(scrollView.isFollowingEnd, false);
+		assert.strictEqual(scrollView.isAtEnd, true);
+
+		scrollView.scrollToStart();
+		renderLayoutFrame(scrollView, 10, 8, () => {});
+		assert.strictEqual(scrollView.isFollowingEnd, false);
+		assert.strictEqual(scrollView.isAtEnd, true);
+
+		scrollView.scrollToEnd();
 		assert.strictEqual(scrollView.isFollowingEnd, true);
 	});
 

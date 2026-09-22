@@ -97,7 +97,7 @@ The dedicated history actions browse prompt history regardless of cursor positio
 
 #### Fullscreen
 
-In fullscreen mode, these actions control the transcript and take precedence over editor actions using the same key. Dragging with the primary mouse button selects and keeps text highlighted. Automatic copy silently writes the Linux primary selection or the clipboard on other platforms; `app.message.copy` explicitly copies the active selection to the system clipboard and confirms success.
+In fullscreen mode, these actions control the transcript and take precedence over editor actions using the same key. Dragging with the primary mouse button selects and keeps text highlighted. Automatic copy silently writes the Linux primary selection or the clipboard on other platforms; `app.message.copy` explicitly copies the active selection to the system clipboard and confirms success. The selected marked message has an underline on its last line without replacing its existing colors, so user and assistant messages retain their distinct styling. Visible assistant text remains navigable when the same message calls tools, while tool rows and assistant thinking blocks, including collapsed placeholders, are excluded. The message remains selected while scrolling, resizing, typing, or receiving output. Submitting a message clears the selection and resumes following the transcript end. `ctrl+k` and `ctrl+j` select the previous and next marked messages in fullscreen mode, overriding their editor actions there.
 
 | Keybinding id | Default | Description |
 |---|---|---|
@@ -107,8 +107,8 @@ In fullscreen mode, these actions control the transcript and take precedence ove
 | `tui.altScreen.halfPageDown` | None | Scroll the transcript down by half a page |
 | `tui.altScreen.lineUp` | None | Scroll the transcript up by one line |
 | `tui.altScreen.lineDown` | None | Scroll the transcript down by one line |
-| `tui.altScreen.previousPrompt` | `ctrl+shift+up`, `ctrl+up` (`ctrl+up` only on Windows and WSL) | Jump to the previous marked message |
-| `tui.altScreen.nextPrompt` | `ctrl+shift+down`, `ctrl+down` (`ctrl+down` only on Windows and WSL) | Jump to the next marked message |
+| `tui.altScreen.previousPrompt` | `ctrl+k`, `ctrl+shift+up`, `ctrl+up` (`ctrl+k`, `ctrl+up` on Windows and WSL) | Select the previous marked message |
+| `tui.altScreen.nextPrompt` | `ctrl+j`, `ctrl+shift+down`, `ctrl+down` (`ctrl+j`, `ctrl+down` on Windows and WSL) | Select the next marked message |
 | `tui.altScreen.search` | `ctrl+shift+f` (`ctrl+f` on Windows and WSL) | Search the rendered transcript |
 | `tui.altScreen.searchNext` | `enter`, `ctrl+g` | Select the next search match while searching |
 | `tui.altScreen.searchPrevious` | `shift+enter`, `ctrl+shift+g` | Select the previous search match while searching |
