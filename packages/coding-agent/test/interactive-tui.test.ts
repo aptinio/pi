@@ -149,11 +149,11 @@ describe("createInteractiveTui", () => {
 		}
 	});
 
-	it("decorates transcript selection without replacing existing message colors", async () => {
+	it("decorates only transcript selection boundaries without replacing message colors", async () => {
 		initTheme("dark");
 		const previousKeybindings = getKeybindings();
 		setKeybindings(new KeybindingsManager());
-		const terminal = new RecordingTerminal(30, 2);
+		const terminal = new RecordingTerminal(30, 4);
 		const ui = createInteractiveTui({
 			tuiMode: "fullscreen",
 			showHardwareCursor: false,
@@ -161,7 +161,17 @@ describe("createInteractiveTui", () => {
 			terminal,
 		});
 		ui.addChild(
-			new Text("\x1b]133;A\x07\x1b[48;5;52mmessage\x1b[49m\n\x1b]133;B\x07\x1b]133;C\x07detail\nfiller", 0, 0),
+			new Text(
+				[
+					"\x1b]133;A\x07\x1b[48;5;52mmessage\x1b[49m",
+					"middle",
+					"\x1b]133;B\x07\x1b]133;C\x07detail",
+					"\x1b]133;A\x07\x1b]133;B\x07\x1b]133;C\x07single line",
+					"filler",
+				].join("\n"),
+				0,
+				0,
+			),
 		);
 		ui.start();
 		try {
@@ -170,7 +180,15 @@ describe("createInteractiveTui", () => {
 			terminal.sendInput("\x0b");
 			await terminal.waitForRender();
 			const writes = terminal.writes.slice(eventCount).join("");
-			expect(writes).toContain("\x1b[48;5;52m\x1b[4;53mmessage\x1b[24;55m\x1b[49m");
+			expect(writes).toContain("\x1b[48;5;52m\x1b[53mmessage\x1b[55m\x1b[49m");
+			expect(writes).toContain("\x1b[2;1H\x1b[2Kmiddle");
+			expect(writes).toMatch(/\x1b\[4mdetail +\x1b\[24m/);
+
+			const nextEventCount = terminal.writes.length;
+			terminal.sendInput("\x1b[106;5u");
+			await terminal.waitForRender();
+			const nextWrites = terminal.writes.slice(nextEventCount).join("");
+			expect(nextWrites).toMatch(/\x1b\[4m\x1b\[53msingle line +\x1b\[55m\x1b\[24m/);
 		} finally {
 			ui.stop();
 			setKeybindings(previousKeybindings);

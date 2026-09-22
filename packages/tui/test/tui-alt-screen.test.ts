@@ -1257,7 +1257,8 @@ describe("TuiAltScreen", () => {
 	it("groups assistant text ranges while excluding thinking rows", async () => {
 		const terminal = new RecordingTerminal(20, 3);
 		const tui = new TuiAltScreen(terminal, undefined, undefined, {
-			promptSelectionStyle: (text) => `\x1b[45m${text}\x1b[49m`,
+			promptSelectionStyle: (text, { isFirstLine, isLastLine }) =>
+				`${isFirstLine ? "\x1b[41m" : ""}${isLastLine ? "\x1b[42m" : ""}${text}${isLastLine ? "\x1b[49m" : ""}${isFirstLine ? "\x1b[49m" : ""}`,
 		});
 		tui.addChild(
 			new Text(
@@ -1282,9 +1283,10 @@ describe("TuiAltScreen", () => {
 			.filter((event): event is { type: "write"; data: string } => event.type === "write")
 			.map((event) => event.data)
 			.join("");
-		assert.ok(selectionWrites.includes("\x1b[45mfirst answer"));
-		assert.ok(selectionWrites.includes("\x1b[45msecond answer"));
-		assert.ok(!selectionWrites.includes("\x1b[45mprivate reasoning"));
+		assert.ok(selectionWrites.includes("\x1b[41mfirst answer"));
+		assert.ok(selectionWrites.includes("\x1b[42msecond answer"));
+		assert.ok(!selectionWrites.includes("\x1b[41mprivate reasoning"));
+		assert.ok(!selectionWrites.includes("\x1b[42mprivate reasoning"));
 
 		const nextEventCount = terminal.events.length;
 		terminal.sendInput("\x1b[1;6B");
@@ -1294,7 +1296,7 @@ describe("TuiAltScreen", () => {
 			.filter((event): event is { type: "write"; data: string } => event.type === "write")
 			.map((event) => event.data)
 			.join("");
-		assert.ok(nextWrites.includes("\x1b[45mnext message"));
+		assert.ok(nextWrites.includes("\x1b[41m\x1b[42mnext message"));
 		tui.stop();
 	});
 

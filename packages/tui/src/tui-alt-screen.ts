@@ -172,6 +172,11 @@ interface SemanticPromptZone {
 	ranges: SemanticPromptRange[];
 }
 
+export interface PromptSelectionStyleContext {
+	readonly isFirstLine: boolean;
+	readonly isLastLine: boolean;
+}
+
 export interface TuiAltScreenOptions {
 	/** Number of logical lines moved for each mouse-wheel event. */
 	wheelScrollLines?: number;
@@ -183,8 +188,8 @@ export interface TuiAltScreenOptions {
 	searchCurrentMatchStyle?: (text: string) => string;
 	/** Style a transcript search navigation button. */
 	searchNavigationButtonStyle?: (text: string, hovered: boolean) => string;
-	/** Style the semantic prompt selected by previous/next prompt navigation. */
-	promptSelectionStyle?: (text: string) => string;
+	/** Style a line of the semantic prompt selected by previous/next prompt navigation. */
+	promptSelectionStyle?: (text: string, context: PromptSelectionStyleContext) => string;
 	/**
 	 * Render a clickable jump-to-end label. It is centered on the last row of a follow-end
 	 * primary scroll view while that view is scrolled away from its end.
@@ -259,7 +264,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private readonly searchMatchStyle: (text: string) => string;
 	private readonly searchCurrentMatchStyle: (text: string) => string;
 	private readonly searchNavigationButtonStyle: (text: string, hovered: boolean) => string;
-	private readonly promptSelectionStyle: (text: string) => string;
+	private readonly promptSelectionStyle: (text: string, context: PromptSelectionStyleContext) => string;
 	private readonly scrollToEndIndicator?: () => string;
 	private readonly openUrl?: (url: string) => void;
 	private readonly onMiddleClickPaste?: () => void;
@@ -1696,7 +1701,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return result;
 	}
 
-	private applyPromptSelectionStyle(text: string): string {
+	private applyPromptSelectionStyle(text: string, context: PromptSelectionStyleContext): string {
 		let result = "";
 		let plainStart = 0;
 		let index = 0;
@@ -1706,12 +1711,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				index += 1;
 				continue;
 			}
-			if (index > plainStart) result += this.promptSelectionStyle(text.slice(plainStart, index));
+			if (index > plainStart) result += this.promptSelectionStyle(text.slice(plainStart, index), context);
 			result += ansi.code;
 			index += ansi.length;
 			plainStart = index;
 		}
-		if (plainStart < text.length) result += this.promptSelectionStyle(text.slice(plainStart));
+		if (plainStart < text.length) result += this.promptSelectionStyle(text.slice(plainStart), context);
 		return result;
 	}
 
@@ -1740,6 +1745,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		);
 		if (maxColumn <= minColumn) return screen;
 
+		const firstSelectedRow = zone.ranges[0]!.startRow;
+		const lastSelectedRow = zone.ranges[zone.ranges.length - 1]!.endRow;
 		const result = [...screen];
 		for (const range of zone.ranges) {
 			const firstContentRow = Math.max(range.startRow, scrollView.scrollTop + minRow - box.rect.y);
@@ -1754,7 +1761,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				const selectedWidth = visibleWidth(selected);
 				const paddedSelection = selected + " ".repeat(Math.max(0, maxColumn - minColumn - selectedWidth));
 				const after = sliceByColumn(line, maxColumn, Math.max(0, lineWidth - maxColumn), true);
-				result[row] = `${before}${this.applyPromptSelectionStyle(paddedSelection)}${after}`;
+				result[row] = `${before}${this.applyPromptSelectionStyle(paddedSelection, {
+					isFirstLine: contentRow === firstSelectedRow,
+					isLastLine: contentRow === lastSelectedRow,
+				})}${after}`;
 			}
 		}
 		return result;
