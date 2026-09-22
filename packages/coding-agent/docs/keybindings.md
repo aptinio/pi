@@ -88,7 +88,7 @@ The dedicated history actions always change history entries, regardless of the c
 
 These actions apply when interactive mode uses `--tui-mode fullscreen` and target the primary transcript scroll region. Two-finger trackpad and mouse-wheel input scroll the region under the pointer, falling back to the transcript over the fixed editor/status/footer dock. Clicking an OSC 8 hyperlink opens it in the default handler. Dragging with the primary mouse button selects and keeps text highlighted; automatic copy silently writes the Linux primary selection or the clipboard on other platforms. The `app.message.copy` action explicitly copies the active selection to the system clipboard and confirms success. Holding at the transcript's top or bottom edge auto-scrolls into off-screen content. While the transcript is scrolled up, a clickable "Jump to latest message" label on its bottom row shows the `tui.altScreen.bottom` shortcut. See [Terminal setup](terminal-setup.md) for terminal-specific mouse and trackpad behavior.
 
-Fullscreen transcript bindings take precedence over editor bindings. The default unmodified navigation keys therefore control the transcript in fullscreen mode, while their `ctrl` variants continue to control the editor. Outside fullscreen mode, both variants control the editor.
+Fullscreen transcript bindings take precedence over editor bindings. The selected marked message is highlighted and remains selected while scrolling, resizing, typing, or receiving output. Submitting a message clears the selection and resumes following the transcript end. `ctrl+k` and `ctrl+j` select the previous and next marked messages in fullscreen mode, overriding their editor actions there. Outside fullscreen mode, they retain their editor behavior.
 
 The transcript search panel shows the configured previous/next shortcuts and clickable arrow controls. Press `tui.altScreen.search` again, or use `tui.altScreen.searchClose`, to close it.
 
@@ -109,8 +109,8 @@ This routing remains configurable through the ordinary action bindings. For exam
 | `tui.altScreen.halfPageDown` | *(none)* | Scroll the transcript down by half a page |
 | `tui.altScreen.lineUp` | *(none)* | Scroll the transcript up by one line |
 | `tui.altScreen.lineDown` | *(none)* | Scroll the transcript down by one line |
-| `tui.altScreen.previousPrompt` | `ctrl+shift+up`, `ctrl+up` (`ctrl+up` only on Windows and WSL) | Jump to the previous marked message |
-| `tui.altScreen.nextPrompt` | `ctrl+shift+down`, `ctrl+down` (`ctrl+down` only on Windows and WSL) | Jump to the next marked message |
+| `tui.altScreen.previousPrompt` | `ctrl+k`, `ctrl+shift+up`, `ctrl+up` (`ctrl+k`, `ctrl+up` on Windows and WSL) | Select the previous marked message |
+| `tui.altScreen.nextPrompt` | `ctrl+j`, `ctrl+shift+down`, `ctrl+down` (`ctrl+j`, `ctrl+down` on Windows and WSL) | Select the next marked message |
 | `tui.altScreen.search` | `ctrl+shift+f` (`ctrl+f` on Windows and WSL) | Search the rendered transcript |
 | `tui.altScreen.searchNext` | `enter`, `ctrl+g` | Select the next search match while searching |
 | `tui.altScreen.searchPrevious` | `shift+enter`, `ctrl+shift+g` | Select the previous search match while searching |

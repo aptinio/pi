@@ -689,6 +689,46 @@ describe("TuiAltScreen", () => {
 		tui.stop();
 	});
 
+	it("does not cancel a selected transcript's preserved viewport when another region consumes wheel input", async () => {
+		const terminal = new VirtualTerminal(20, 4);
+		const tui = new TuiAltScreen(terminal);
+		const transcriptText = new Text(
+			[1, 2, 3, 4].flatMap((message) => [`${OSC133_ZONE_START}message ${message}`, "detail"]).join("\n"),
+			0,
+			0,
+		);
+		const transcript = new ScrollView(transcriptText, { follow: "end", primary: true });
+		const secondary = new ScrollView(new Text("s1\ns2\ns3\ns4\ns5\ns6", 0, 0), { overscroll: "contain" });
+		tui.setLayoutRoot(
+			new HStack([
+				{ component: transcript, basis: 10 },
+				{ component: secondary, basis: 10 },
+			]),
+		);
+		tui.start();
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[1;6A");
+		await terminal.waitForRender();
+		assert.strictEqual(transcript.isFollowingEnd, false);
+
+		transcript.preserveViewport();
+		transcriptText.setText(
+			[1, 2, 3].flatMap((message) => [`${OSC133_ZONE_START}message ${message}`, "detail"]).join("\n"),
+		);
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.strictEqual(transcript.scrollTop, 4);
+		assert.strictEqual(transcript.isAtEnd, true);
+
+		terminal.sendInput("\x1b[<65;15;1M");
+		await terminal.waitForRender();
+		assert.strictEqual(secondary.scrollTop, 1);
+		assert.strictEqual(transcript.scrollTop, 4);
+		assert.strictEqual(transcript.isFollowingEnd, false);
+		tui.stop();
+	});
+
 	it("supports configurable keyboard viewport navigation with four rows of page overlap", async () => {
 		const terminal = new VirtualTerminal(20, 8);
 		const tui = new TuiAltScreen(terminal);
@@ -968,11 +1008,91 @@ describe("TuiAltScreen", () => {
 		assert.ok(terminal.getViewport().some((line) => line.includes("line 10 needle two")));
 
 		terminal.sendInput("\x1b");
+		await terminal.waitForRender();
+		terminal.resize(60, 13);
+		await terminal.waitForRender();
+		assert.strictEqual(transcript.isAtEnd, true);
+		assert.strictEqual(transcript.isFollowingEnd, true);
+
 		terminal.sendInput("x");
 		await terminal.waitForRender();
 		assert.ok(!terminal.getViewport().some((line) => line.includes("↑ Shift+Enter · ↓ Enter")));
 		assert.deepStrictEqual(editorInputs, ["x"]);
 
+		tui.setLayoutRoot(undefined);
+		transcript.updateLayout(12, 12, () => {});
+		assert.strictEqual(transcript.isFollowingEnd, true);
+		tui.stop();
+	});
+
+	it("defers prompt navigation bindings to the focused search input", async () => {
+		const originalKeybindings = getKeybindings();
+		const terminal = new VirtualTerminal(20, 3);
+		const tui = new TuiAltScreen(terminal);
+		setKeybindings(
+			new KeybindingsManager(TUI_KEYBINDINGS, {
+				"tui.altScreen.previousPrompt": "ctrl+k",
+			}),
+		);
+		try {
+			tui.addChild(
+				new Text(
+					[1, 2, 3, 4].flatMap((message) => [`${OSC133_ZONE_START}message ${message}`, "detail"]).join("\n"),
+					0,
+					0,
+				),
+			);
+			tui.start();
+			await terminal.waitForRender();
+			assert.strictEqual(tui.viewportTop, 5);
+
+			terminal.sendInput("\x1b[102;6u");
+			terminal.sendInput("\x0b");
+			await terminal.waitForRender();
+			assert.strictEqual(tui.viewportTop, 5);
+		} finally {
+			tui.stop();
+			setKeybindings(originalKeybindings);
+		}
+	});
+
+	it("keeps prompt-owned follow suppression when closing an unfocused search", async () => {
+		const terminal = new VirtualTerminal(20, 4);
+		const tui = new TuiAltScreen(terminal);
+		const transcript = new ScrollView(
+			new Text(
+				[1, 2, 3, 4].flatMap((message) => [`${OSC133_ZONE_START}message ${message}`, "detail"]).join("\n"),
+				0,
+				0,
+			),
+			{ follow: "end", primary: true },
+		);
+		const editor = {
+			focused: false,
+			render: () => ["editor"],
+			invalidate: () => {},
+		};
+		tui.setLayoutRoot(
+			new VStack([
+				{ component: transcript, basis: 0, grow: 1, minSize: 1 },
+				{ component: editor, basis: 1, shrink: 0 },
+			]),
+		);
+		tui.setFocus(editor);
+		tui.start();
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[102;6u");
+		await terminal.waitForRender();
+		tui.setFocus(editor);
+		terminal.sendInput("\x1b[1;6B");
+		await terminal.waitForRender();
+		assert.strictEqual(transcript.isAtEnd, true);
+		assert.strictEqual(transcript.isFollowingEnd, false);
+
+		terminal.sendInput("\x1b[102;6u");
+		await terminal.waitForRender();
+		assert.strictEqual(transcript.isFollowingEnd, false);
 		tui.stop();
 	});
 
@@ -1080,7 +1200,9 @@ describe("TuiAltScreen", () => {
 
 	it("jumps between OSC 133 semantic prompt markers", async () => {
 		const terminal = new VirtualTerminal(20, 3);
-		const tui = new TuiAltScreen(terminal);
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			scrollToEndIndicator: () => "Jump to end",
+		});
 		tui.addChild(
 			new Text(
 				[1, 2, 3, 4].flatMap((message) => [`${OSC133_ZONE_START}message ${message}`, "detail"]).join("\n"),
@@ -1109,12 +1231,159 @@ describe("TuiAltScreen", () => {
 		assert.strictEqual(tui.viewportTop, 4);
 		assert.strictEqual(terminal.getViewport()[0]?.trimEnd(), "message 3");
 
+		tui.scrollBy(1);
+		await terminal.waitForRender();
+		assert.strictEqual(tui.viewportTop, 5);
+		assert.strictEqual(tui.isFollowingOutput, false);
+
 		terminal.sendInput("\x1b[1;6B");
 		await terminal.waitForRender();
 		assert.strictEqual(tui.viewportTop, 5);
 		assert.strictEqual(terminal.getViewport()[1]?.trimEnd(), "message 4");
+		assert.strictEqual(tui.isFollowingOutput, false);
+		assert.ok(!terminal.getViewport().some((line) => line.includes("Jump to end")));
+
+		tui.scrollBy(1);
+		await terminal.waitForRender();
+		assert.strictEqual(tui.isFollowingOutput, false);
+
+		tui.clearPromptSelection();
+		await terminal.waitForRender();
 		assert.strictEqual(tui.isFollowingOutput, true);
 
+		tui.stop();
+	});
+
+	it("selects a first semantic prompt that starts at the viewport top", async () => {
+		const terminal = new RecordingTerminal(20, 4);
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			promptSelectionStyle: (text) => `\x1b[45m${text}\x1b[49m`,
+		});
+		tui.addChild(new Text(`${OSC133_ZONE_START}message\n\x1b]133;B\x07\x1b]133;C\x07detail`, 0, 0));
+		tui.start();
+		await terminal.waitForRender();
+
+		const eventCount = terminal.events.length;
+		terminal.sendInput("\x1b[1;6A");
+		tui.requestRender();
+		await terminal.waitForRender();
+		const writes = terminal.events
+			.slice(eventCount)
+			.filter((event): event is { type: "write"; data: string } => event.type === "write")
+			.map((event) => event.data)
+			.join("");
+		assert.ok(writes.includes("\x1b[45mmessage"));
+		tui.stop();
+	});
+
+	it("keeps follow-end suppressed while dragging the scrollbar with a selected prompt", async () => {
+		const terminal = new VirtualTerminal(20, 3);
+		const tui = new TuiAltScreen(terminal);
+		const transcript = new ScrollView(
+			new Text(
+				[1, 2, 3, 4].flatMap((message) => [`${OSC133_ZONE_START}message ${message}`, "detail"]).join("\n"),
+				0,
+				0,
+			),
+			{ follow: "end", primary: true, scrollbar: "always" },
+		);
+		tui.setLayoutRoot(transcript);
+		tui.start();
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[1;6A");
+		await terminal.waitForRender();
+		assert.strictEqual(tui.isFollowingOutput, false);
+
+		terminal.sendInput("\x1b[<0;20;1M");
+		terminal.sendInput("\x1b[<0;20;1m");
+		await terminal.waitForRender();
+		terminal.resize(20, 8);
+		await terminal.waitForRender();
+		assert.strictEqual(tui.isFollowingOutput, false);
+		tui.stop();
+	});
+
+	it("highlights the selected semantic prompt and preserves it across viewport changes", async () => {
+		const terminal = new RecordingTerminal(20, 3);
+		let streamedOutputLines = 0;
+		const content = {
+			render: (width: number) => [
+				...[1, 2, 3, 4].flatMap((message) => [
+					`${OSC133_ZONE_START}message ${message}`,
+					...(width < 20 ? [`wrapped ${message}`] : []),
+					`\x1b]133;B\x07\x1b]133;C\x07detail ${message}`,
+				]),
+				...Array.from({ length: streamedOutputLines }, (_, index) => `streamed output ${index + 1}`),
+			],
+			invalidate: () => {},
+		};
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			promptSelectionStyle: (text) => `\x1b[45m${text}\x1b[49m`,
+		});
+		tui.addChild(content);
+		tui.start();
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[1;6A");
+		await terminal.waitForRender();
+		assert.strictEqual(tui.viewportTop, 4);
+		assert.ok(
+			terminal.events.some(
+				(event) =>
+					event.type === "write" &&
+					event.data.includes("\x1b[45mmessage 3") &&
+					event.data.includes("\x1b[45mdetail 3"),
+			),
+		);
+
+		tui.scrollToTop();
+		await terminal.waitForRender();
+		streamedOutputLines = 1;
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[1;6B");
+		await terminal.waitForRender();
+		assert.strictEqual(tui.viewportTop, 6);
+		assert.strictEqual(tui.isFollowingOutput, false);
+		assert.ok(
+			terminal.events.some(
+				(event) =>
+					event.type === "write" &&
+					event.data.includes("\x1b[45mmessage 4") &&
+					event.data.includes("\x1b[45mdetail 4"),
+			),
+		);
+
+		streamedOutputLines = 2;
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.strictEqual(tui.viewportTop, 6);
+		assert.strictEqual(tui.isFollowingOutput, false);
+
+		terminal.resize(12, 3);
+		await terminal.waitForRender();
+		tui.scrollBy(3);
+		const resizeEventCount = terminal.events.length;
+		await terminal.waitForRender();
+		const resizeWrites = terminal.events
+			.slice(resizeEventCount)
+			.filter((event): event is { type: "write"; data: string } => event.type === "write")
+			.map((event) => event.data)
+			.join("");
+		assert.ok(resizeWrites.includes("\x1b[45mdetail 4"));
+
+		const clearEventCount = terminal.events.length;
+		tui.clearPromptSelection({ followEnd: true });
+		await terminal.waitForRender();
+		assert.strictEqual(tui.isFollowingOutput, true);
+		const clearWrites = terminal.events
+			.slice(clearEventCount)
+			.filter((event): event is { type: "write"; data: string } => event.type === "write")
+			.map((event) => event.data)
+			.join("");
+		assert.ok(!clearWrites.includes("\x1b[45m"));
 		tui.stop();
 	});
 

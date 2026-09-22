@@ -108,6 +108,47 @@ describe("createInteractiveTui", () => {
 		}
 	});
 
+	it("selects previous and next transcript messages with Ctrl+K and Ctrl+J", async () => {
+		initTheme("dark");
+		const previousKeybindings = getKeybindings();
+		setKeybindings(new KeybindingsManager());
+		const terminal = new RecordingTerminal(30, 3);
+		const ui = createInteractiveTui({
+			tuiMode: "fullscreen",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+		});
+		ui.addChild(
+			new Text(
+				[1, 2, 3, 4]
+					.flatMap((message) => [
+						`\x1b]133;A\x07message ${message}`,
+						`\x1b]133;B\x07\x1b]133;C\x07detail ${message}`,
+					])
+					.join("\n"),
+				0,
+				0,
+			),
+		);
+		ui.start();
+		try {
+			await terminal.waitForRender();
+			terminal.sendInput("\x0b");
+			await terminal.waitForRender();
+			expect(ui.viewportTop).toBe(4);
+			expect(terminal.getViewport()[0]).toContain("message 3");
+
+			terminal.sendInput("\x1b[106;5u");
+			await terminal.waitForRender();
+			expect(ui.viewportTop).toBe(5);
+			expect(terminal.getViewport()[1]).toContain("message 4");
+		} finally {
+			ui.stop();
+			setKeybindings(previousKeybindings);
+		}
+	});
+
 	it("replaces the renderer and restores the previous screen for resume-hint exits", async () => {
 		const terminal = new RecordingTerminal(40, 8);
 		const renderer = createInteractiveTui({
@@ -170,8 +211,97 @@ describe("createInteractiveTui", () => {
 	});
 });
 
+type SubmitHandlerContext = {
+	defaultEditor: { onSubmit?: (text: string) => Promise<void> };
+	editor: {
+		addToHistory: ReturnType<typeof vi.fn>;
+		getText: () => string;
+		setText: ReturnType<typeof vi.fn>;
+	};
+	session: {
+		isBashRunning: boolean;
+		isCompacting: boolean;
+		isStreaming: boolean;
+		prompt: ReturnType<typeof vi.fn>;
+	};
+	pendingUserInputs: string[];
+	onInputCallback?: (text: string) => void;
+	flushPendingBashComponents: ReturnType<typeof vi.fn>;
+	clearTranscriptPromptSelection: ReturnType<typeof vi.fn>;
+	updatePendingMessagesDisplay: ReturnType<typeof vi.fn>;
+	ui: { requestRender: ReturnType<typeof vi.fn> };
+};
+
+const setupEditorSubmitHandler = Reflect.get(InteractiveMode.prototype, "setupEditorSubmitHandler") as (
+	this: SubmitHandlerContext,
+) => void;
+
+describe("InteractiveMode transcript prompt selection", () => {
+	it("clears the selection and follows output after accepting a submitted message", async () => {
+		const context: SubmitHandlerContext = {
+			defaultEditor: {},
+			editor: {
+				addToHistory: vi.fn(),
+				getText: () => "",
+				setText: vi.fn(),
+			},
+			session: {
+				isBashRunning: false,
+				isCompacting: false,
+				isStreaming: false,
+				prompt: vi.fn(),
+			},
+			pendingUserInputs: [],
+			flushPendingBashComponents: vi.fn(),
+			clearTranscriptPromptSelection: vi.fn(),
+			updatePendingMessagesDisplay: vi.fn(),
+			ui: { requestRender: vi.fn() },
+		};
+		setupEditorSubmitHandler.call(context);
+
+		await context.defaultEditor.onSubmit?.("new message");
+
+		expect(context.pendingUserInputs).toEqual(["new message"]);
+		expect(context.clearTranscriptPromptSelection).toHaveBeenCalledWith(true);
+	});
+
+	it("clears the selection only after a streaming submission succeeds", async () => {
+		const prompt = vi.fn().mockResolvedValue(undefined);
+		const context: SubmitHandlerContext = {
+			defaultEditor: {},
+			editor: {
+				addToHistory: vi.fn(),
+				getText: () => "",
+				setText: vi.fn(),
+			},
+			session: {
+				isBashRunning: false,
+				isCompacting: false,
+				isStreaming: true,
+				prompt,
+			},
+			pendingUserInputs: [],
+			flushPendingBashComponents: vi.fn(),
+			clearTranscriptPromptSelection: vi.fn(),
+			updatePendingMessagesDisplay: vi.fn(),
+			ui: { requestRender: vi.fn() },
+		};
+		setupEditorSubmitHandler.call(context);
+
+		await context.defaultEditor.onSubmit?.("steer");
+
+		expect(prompt).toHaveBeenCalledWith("steer", { streamingBehavior: "steer" });
+		expect(context.clearTranscriptPromptSelection).toHaveBeenCalledWith(true);
+
+		prompt.mockRejectedValueOnce(new Error("failed"));
+		context.clearTranscriptPromptSelection.mockClear();
+		await expect(context.defaultEditor.onSubmit?.("retry")).rejects.toThrow("failed");
+		expect(context.clearTranscriptPromptSelection).not.toHaveBeenCalled();
+	});
+});
+
 describe("InteractiveMode mouse paste", () => {
-	it("feeds clipboard text to the focused component for right-click paste", async () => {
+	it("feeds clipboard text to the focused component as a bracketed right-click paste", async () => {
 		clipboardMocks.readClipboardText.mockResolvedValue("clipboard text");
 		const handleInput = vi.fn<(data: string) => void>();
 		const target = { render: () => [], invalidate: () => {}, handleInput } satisfies Component;

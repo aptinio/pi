@@ -1165,8 +1165,9 @@ export function matchesKey(data: string, keyId: KeyId): boolean {
 		}
 
 		if (modifier === MODIFIERS.ctrl) {
-			// Legacy: ctrl+key sends the control character
-			if (rawCtrl && data === rawCtrl) return true;
+			// Legacy: ctrl+key sends the control character. With Kitty protocol active,
+			// raw LF is an explicit Shift+Enter mapping and must not also match Ctrl+J.
+			if (rawCtrl && data === rawCtrl && !(_kittyProtocolActive && key === "j" && data === "\n")) return true;
 			return (
 				matchesKittySequence(data, codepoint, MODIFIERS.ctrl) ||
 				matchesPrintableModifyOtherKeys(data, codepoint, MODIFIERS.ctrl)

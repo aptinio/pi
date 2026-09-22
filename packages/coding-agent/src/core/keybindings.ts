@@ -80,11 +80,11 @@ export const KEYBINDINGS = {
 	},
 	"tui.altScreen.previousPrompt": {
 		...TUI_KEYBINDINGS["tui.altScreen.previousPrompt"],
-		defaultKeys: windowsKeybindings ? "ctrl+up" : ["ctrl+shift+up", "ctrl+up"],
+		defaultKeys: windowsKeybindings ? ["ctrl+k", "ctrl+up"] : ["ctrl+k", "ctrl+shift+up", "ctrl+up"],
 	},
 	"tui.altScreen.nextPrompt": {
 		...TUI_KEYBINDINGS["tui.altScreen.nextPrompt"],
-		defaultKeys: windowsKeybindings ? "ctrl+down" : ["ctrl+shift+down", "ctrl+down"],
+		defaultKeys: windowsKeybindings ? ["ctrl+j", "ctrl+down"] : ["ctrl+j", "ctrl+shift+down", "ctrl+down"],
 	},
 	"tui.altScreen.search": {
 		...TUI_KEYBINDINGS["tui.altScreen.search"],
