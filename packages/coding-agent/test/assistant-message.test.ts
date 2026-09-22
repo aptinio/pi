@@ -34,25 +34,135 @@ function createAssistantMessage(
 }
 
 describe("AssistantMessageComponent", () => {
-	test("adds OSC 133 zone markers to assistant messages without tool calls", () => {
+	test("adds OSC 133 zone markers to assistant text without tool calls", () => {
 		initTheme("dark");
 
 		const component = new AssistantMessageComponent(createAssistantMessage([{ type: "text", text: "hello" }]));
 		const lines = component.render(40);
+		const textRow = lines.findIndex((line) => stripAnsi(line).includes("hello"));
 
-		expect(lines).not.toHaveLength(0);
-		expect(lines[0]).toContain(OSC133_ZONE_START);
-		expect(lines[lines.length - 1].startsWith(OSC133_ZONE_END + OSC133_ZONE_FINAL)).toBe(true);
+		expect(textRow).toBeGreaterThanOrEqual(0);
+		expect(lines[textRow]).toContain(OSC133_ZONE_START);
+		expect(lines[textRow]).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
 	});
 
-	test("does not add OSC 133 zone markers when assistant message contains tool calls", () => {
+	test("marks the complete wrapped assistant text range", () => {
+		initTheme("dark");
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([{ type: "text", text: "one two three four five six seven eight" }]),
+		);
+		const answerRows = component.render(12).filter((line) => stripAnsi(line).trim().length > 0);
+		const firstAnswer = answerRows[0];
+		const lastAnswer = answerRows[answerRows.length - 1];
+
+		expect(answerRows.length).toBeGreaterThan(1);
+		expect(firstAnswer).toContain(OSC133_ZONE_START);
+		expect(firstAnswer).not.toContain(OSC133_ZONE_END);
+		expect(lastAnswer).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
+		expect(lastAnswer).not.toContain(OSC133_ZONE_START);
+	});
+
+	test("excludes expanded and collapsed thinking runs from assistant semantic zones", () => {
+		initTheme("dark");
+		const message = createAssistantMessage([
+			{ type: "text", text: "first answer" },
+			{ type: "thinking", thinking: "private reasoning" },
+			{ type: "text", text: "second answer" },
+		]);
+
+		for (const hideThinking of [false, true]) {
+			const lines = new AssistantMessageComponent(message, hideThinking).render(80);
+			const firstAnswer = lines.find((line) => stripAnsi(line).includes("first answer"));
+			const thinking = lines.find((line) =>
+				stripAnsi(line).includes(hideThinking ? "Thinking..." : "private reasoning"),
+			);
+			const secondAnswer = lines.find((line) => stripAnsi(line).includes("second answer"));
+
+			expect(firstAnswer).toContain(OSC133_ZONE_START);
+			expect(firstAnswer).toContain(OSC133_ZONE_END);
+			expect(firstAnswer).not.toContain(OSC133_ZONE_FINAL);
+			expect(thinking).not.toContain(OSC133_ZONE_START);
+			expect(thinking).not.toContain(OSC133_ZONE_END);
+			expect(thinking).not.toContain(OSC133_ZONE_FINAL);
+			expect(secondAnswer).toContain(OSC133_ZONE_START);
+			expect(secondAnswer).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
+		}
+	});
+
+	test("finalizes the last assistant text range that actually renders", () => {
+		initTheme("dark");
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([
+				{ type: "text", text: "visible answer" },
+				{ type: "thinking", thinking: "private reasoning" },
+				{ type: "text", text: "removed answer" },
+			]),
+			false,
+			undefined,
+			"Thinking...",
+			1,
+			[(markdown) => (markdown === "removed answer" ? "" : markdown)],
+		);
+		const lines = component.render(80);
+		const visibleAnswer = lines.find((line) => stripAnsi(line).includes("visible answer"));
+		const thinking = lines.find((line) => stripAnsi(line).includes("private reasoning"));
+
+		expect(visibleAnswer).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
+		expect(thinking).not.toContain(OSC133_ZONE_FINAL);
+		expect(stripAnsi(lines.join("\n"))).not.toContain("removed answer");
+	});
+
+	test("groups visible assistant text ranges in tool-bearing messages", () => {
 		initTheme("dark");
 
 		const component = new AssistantMessageComponent(
 			createAssistantMessage([
-				{ type: "text", text: "calling tool" },
+				{ type: "text", text: "before tool" },
+				{ type: "toolCall", id: "tool-1", name: "read", arguments: { path: "file.txt" } },
+				{ type: "thinking", thinking: "private reasoning" },
+				{ type: "text", text: "after tool" },
+			]),
+		);
+		const lines = component.render(60);
+		const beforeTool = lines.find((line) => stripAnsi(line).includes("before tool"));
+		const thinking = lines.find((line) => stripAnsi(line).includes("private reasoning"));
+		const afterTool = lines.find((line) => stripAnsi(line).includes("after tool"));
+
+		expect(beforeTool).toContain(OSC133_ZONE_START);
+		expect(beforeTool).toContain(OSC133_ZONE_END);
+		expect(beforeTool).not.toContain(OSC133_ZONE_FINAL);
+		expect(thinking).toBeDefined();
+		expect(thinking).not.toContain(OSC133_ZONE_START);
+		expect(thinking).not.toContain(OSC133_ZONE_END);
+		expect(thinking).not.toContain(OSC133_ZONE_FINAL);
+		expect(afterTool).toBeDefined();
+		expect(afterTool).toContain(OSC133_ZONE_START);
+		expect(afterTool).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
+	});
+
+	test("keeps assistant text marked when a streaming message gains a tool call", () => {
+		initTheme("dark");
+		const component = new AssistantMessageComponent();
+		const textContent = { type: "text" as const, text: "calling tool" };
+
+		component.updateContent(createAssistantMessage([textContent]), true);
+		expect(component.render(60).join("\n")).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
+
+		component.updateContent(
+			createAssistantMessage([
+				textContent,
 				{ type: "toolCall", id: "tool-1", name: "read", arguments: { path: "file.txt" } },
 			]),
+			true,
+		);
+		expect(component.render(60).join("\n")).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
+	});
+
+	test("does not create a semantic zone for tool-call-only assistant messages", () => {
+		initTheme("dark");
+
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([{ type: "toolCall", id: "tool-1", name: "read", arguments: { path: "file.txt" } }]),
 		);
 		const rendered = component.render(60).join("\n");
 
@@ -68,10 +178,14 @@ describe("AssistantMessageComponent", () => {
 			createAssistantMessage([{ type: "thinking", thinking: "private reasoning" }], { stopReason: "length" }),
 			true,
 		);
-		const rendered = component.render(80).join("\n");
+		const lines = component.render(80);
+		const thinking = lines.find((line) => stripAnsi(line).includes("Thinking..."));
+		const truncation = lines.find((line) => stripAnsi(line).includes("Response was truncated before completion."));
 
-		expect(rendered).toContain("Thinking...");
-		expect(rendered).toContain("Response was truncated before completion.");
+		expect(thinking).not.toContain(OSC133_ZONE_START);
+		expect(thinking).not.toContain(OSC133_ZONE_END);
+		expect(truncation).toContain(OSC133_ZONE_START);
+		expect(truncation).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
 	});
 
 	test("coalesces adjacent thinking blocks into one hidden thinking label", () => {
