@@ -48,7 +48,7 @@ describe("InteractiveMode compaction events", () => {
 		expect(disabled.chatContainer.children).toHaveLength(0);
 	});
 
-	test("renders each compaction cost after its summary", () => {
+	test("keeps compaction entries in the supplied projection order", () => {
 		const currentUsage: Usage = {
 			input: 10,
 			output: 20,
@@ -87,7 +87,7 @@ describe("InteractiveMode compaction events", () => {
 				usage: previousUsage,
 			},
 		];
-		const fakeThis = { renderSessionItems: vi.fn() };
+		const fakeThis = { renderTranscriptItems: vi.fn() };
 		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
 			this: typeof fakeThis,
 			entries: SessionEntry[],
@@ -95,12 +95,10 @@ describe("InteractiveMode compaction events", () => {
 
 		renderSessionEntries.call(fakeThis, entries);
 
-		expect(fakeThis.renderSessionItems).toHaveBeenCalledWith(
+		expect(fakeThis.renderTranscriptItems).toHaveBeenCalledWith(
 			[
-				expect.objectContaining({ role: "compactionSummary", summary: "current summary" }),
-				{ type: "compaction_cost", kind: "compaction", usage: currentUsage },
-				expect.objectContaining({ role: "compactionSummary", summary: "previous summary" }),
-				{ type: "compaction_cost", kind: "compaction", usage: previousUsage },
+				expect.objectContaining({ kind: "compaction", entry: expect.objectContaining({ id: "current" }) }),
+				expect.objectContaining({ kind: "compaction", entry: expect.objectContaining({ id: "previous" }) }),
 			],
 			{},
 		);
@@ -135,6 +133,9 @@ describe("InteractiveMode compaction events", () => {
 			tokensBefore: 100,
 			usage,
 		};
+		const expansionState = { tools: new Map(), thinking: new Map(), expandable: new Map() };
+		const transientState = { liveTools: new Map(), bash: { snapshot: { command: "sleep 1" }, pendingIndex: 0 } };
+		const restoreTransientTranscriptState = vi.fn();
 		const fakeThis = {
 			isInitialized: true,
 			footer: { invalidate: vi.fn() },
@@ -143,6 +144,13 @@ describe("InteractiveMode compaction events", () => {
 			defaultEditor: {},
 			statusContainer: { clear: vi.fn() },
 			chatContainer: { clear: vi.fn() },
+			isFullscreen: () => false,
+			captureTranscriptExpansionState: vi.fn(() => expansionState),
+			captureTransientTranscriptState: vi.fn(() => transientState),
+			restoreTransientTranscriptState,
+			addStreamingAssistant: vi.fn(),
+			restoringExpansionState: undefined as typeof expansionState | undefined,
+			clearTranscriptRegistries: vi.fn(),
 			sessionManager: { buildContextEntries: vi.fn().mockReturnValue([latestCompaction, previousCompaction]) },
 			renderSessionEntries: vi.fn(),
 			addMessageToChat: vi.fn(),
@@ -155,6 +163,9 @@ describe("InteractiveMode compaction events", () => {
 			settingsManager: { getShowTerminalProgress: () => false },
 			ui: { requestRender: vi.fn(), terminal: { setProgress: vi.fn() } },
 		};
+		fakeThis.addMessageToChat.mockImplementation(() => {
+			expect(fakeThis.restoringExpansionState).toBe(expansionState);
+		});
 
 		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
 			this: typeof fakeThis,
@@ -164,6 +175,7 @@ describe("InteractiveMode compaction events", () => {
 				result: { tokensBefore: number; summary: string; usage?: Usage } | undefined;
 				aborted: boolean;
 				willRetry: boolean;
+				entryId?: string;
 				errorMessage?: string;
 			},
 		) => Promise<void>;
@@ -176,12 +188,18 @@ describe("InteractiveMode compaction events", () => {
 				summary: "summary",
 				usage,
 			},
+			entryId: "latest",
 			aborted: false,
 			willRetry: false,
 		});
 
+		expect(fakeThis.captureTranscriptExpansionState).toHaveBeenCalledTimes(1);
+		expect(fakeThis.captureTransientTranscriptState).toHaveBeenCalledTimes(1);
+		expect(restoreTransientTranscriptState).toHaveBeenCalledWith(transientState);
+		expect(fakeThis.restoringExpansionState).toBeUndefined();
 		expect(fakeThis.clearTranscriptPromptSelection).toHaveBeenCalledTimes(1);
 		expect(fakeThis.chatContainer.clear).toHaveBeenCalledTimes(1);
+		expect(fakeThis.clearTranscriptRegistries).toHaveBeenCalledTimes(1);
 		expect(fakeThis.renderSessionEntries).toHaveBeenCalledWith([previousCompaction]);
 		expect(fakeThis.addMessageToChat).toHaveBeenCalledTimes(1);
 		expect(fakeThis.addMessageToChat).toHaveBeenCalledWith(
@@ -190,12 +208,136 @@ describe("InteractiveMode compaction events", () => {
 				tokensBefore: 123,
 				summary: "summary",
 			}),
+			{ entryId: "latest" },
 		);
 		expect(fakeThis.addCompactionCostNotice).toHaveBeenCalledWith({
 			type: "compaction_cost",
 			kind: "compaction",
 			usage,
 		});
+		expect(fakeThis.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
+	});
+
+	test("preserves transient state when a regular-mode boundary compaction rebuilds", async () => {
+		const before: SessionEntry = {
+			type: "message",
+			id: "before",
+			parentId: null,
+			timestamp: "2026-09-24T00:00:00Z",
+			message: { role: "user", content: "before", timestamp: 1 },
+		};
+		const compaction: SessionEntry = {
+			type: "compaction",
+			id: "compaction",
+			parentId: "before",
+			timestamp: "2026-09-24T00:00:01Z",
+			summary: "summary",
+			firstKeptEntryId: "before",
+			tokensBefore: 123,
+		};
+		const after: SessionEntry = {
+			type: "message",
+			id: "after",
+			parentId: "compaction",
+			timestamp: "2026-09-24T00:00:02Z",
+			message: { role: "user", content: "after", timestamp: 2 },
+		};
+		const transientState = { liveTools: new Map(), bash: { snapshot: { command: "sleep 1" }, pendingIndex: 0 } };
+		const restoreTransientTranscriptState = vi.fn();
+		const fakeThis = {
+			isInitialized: true,
+			footer: { invalidate: vi.fn() },
+			isFullscreen: () => false,
+			entriesRenderedByBoundaryCompaction: new Set<string>(),
+			sessionManager: {
+				buildContextEntries: () => [compaction, before, after],
+				getBranch: () => [before, compaction, after],
+			},
+			captureTranscriptExpansionState: vi.fn(() => ({
+				tools: new Map(),
+				thinking: new Map(),
+				expandable: new Map(),
+			})),
+			captureTransientTranscriptState: vi.fn(() => transientState),
+			clearTranscriptPromptSelection: vi.fn(),
+			chatContainer: { clear: vi.fn() },
+			clearTranscriptRegistries: vi.fn(),
+			restoringExpansionState: undefined,
+			renderSessionEntries: vi.fn(),
+			addMessageToChat: vi.fn(),
+			addCompactionCostNotice: vi.fn(),
+			addStreamingAssistant: vi.fn(),
+			restoreTransientTranscriptState,
+			ui: { requestRender: vi.fn() },
+		};
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof fakeThis,
+			event: { type: "entry_appended"; entry: SessionEntry },
+		) => Promise<void>;
+
+		await handleEvent.call(fakeThis, { type: "entry_appended", entry: compaction });
+
+		expect(fakeThis.renderSessionEntries).toHaveBeenNthCalledWith(1, [before]);
+		expect(fakeThis.renderSessionEntries).toHaveBeenNthCalledWith(2, [after]);
+		expect(restoreTransientTranscriptState).toHaveBeenCalledWith(transientState);
+		expect(fakeThis.entriesRenderedByBoundaryCompaction).toEqual(new Set(["after"]));
+	});
+
+	test("appends the exact persisted compaction in fullscreen without replacing reader state", async () => {
+		const entry: SessionEntry = {
+			type: "compaction",
+			id: "new-compaction",
+			parentId: "old",
+			timestamp: "2026-09-24T00:00:00Z",
+			summary: "repeated summary",
+			firstKeptEntryId: "old",
+			tokensBefore: 123,
+		};
+		const fakeThis = {
+			isInitialized: true,
+			footer: { invalidate: vi.fn() },
+			autoCompactionEscapeHandler: undefined as (() => void) | undefined,
+			defaultEditor: {},
+			isFullscreen: () => true,
+			transcriptEntries: new Map<string, unknown>(),
+			sessionManager: { getEntry: vi.fn().mockReturnValue(entry) },
+			renderTranscriptItems: vi.fn(),
+			chatContainer: { clear: vi.fn(), addChild: vi.fn() },
+			clearTranscriptPromptSelection: vi.fn(),
+			clearStatusIndicator: vi.fn(),
+			showError: vi.fn(),
+			showStatus: vi.fn(),
+			flushCompactionQueue: vi.fn().mockResolvedValue(undefined),
+			settingsManager: { getShowTerminalProgress: () => false },
+			ui: { requestRender: vi.fn(), terminal: { setProgress: vi.fn() } },
+		};
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof fakeThis,
+			event: {
+				type: "compaction_end";
+				reason: "manual";
+				result: { tokensBefore: number; summary: string };
+				entryId: string;
+				aborted: false;
+				willRetry: false;
+			},
+		) => Promise<void>;
+
+		await handleEvent.call(fakeThis, {
+			type: "compaction_end",
+			reason: "manual",
+			result: { tokensBefore: 123, summary: "repeated summary" },
+			entryId: "new-compaction",
+			aborted: false,
+			willRetry: false,
+		});
+
+		expect(fakeThis.sessionManager.getEntry).toHaveBeenCalledWith("new-compaction");
+		expect(fakeThis.renderTranscriptItems).toHaveBeenCalledWith([
+			expect.objectContaining({ kind: "compaction", entry }),
+		]);
+		expect(fakeThis.chatContainer.clear).not.toHaveBeenCalled();
+		expect(fakeThis.clearTranscriptPromptSelection).not.toHaveBeenCalled();
 		expect(fakeThis.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
 	});
 

@@ -39,15 +39,32 @@ type LoadedResourcesContext = {
 };
 
 type RebindContext = {
+	session: object;
 	unsubscribe?: () => void;
+	unsubscribePersistedEntries?: () => void;
+	transcriptExpansionStateSessionId: string;
+	getTranscriptSessionId: () => string;
+	renderer: object;
 	applyRuntimeSettings: () => void;
-	renderCurrentSessionState: () => void;
+	renderCurrentSessionState: (preservePresentationState: boolean) => void;
 	bindCurrentSessionExtensions: () => Promise<void>;
 	subscribeToAgent: () => void;
 	updateAvailableProviderCount: () => Promise<void>;
 	updateEditorBorderColor: () => void;
 	updateTerminalTitle: () => void;
 };
+
+function createRebindState(): Pick<
+	RebindContext,
+	"session" | "transcriptExpansionStateSessionId" | "getTranscriptSessionId" | "renderer"
+> {
+	return {
+		session: {},
+		transcriptExpansionStateSessionId: "test-session",
+		getTranscriptSessionId: () => "test-session",
+		renderer: {},
+	};
+}
 
 type ReloadCommandContext = {
 	hideThinkingBlock: boolean;
@@ -251,6 +268,7 @@ describe("regression #5943: session_start transient UI", () => {
 
 		try {
 			const context: RebindContext = {
+				...createRebindState(),
 				applyRuntimeSettings: () => events.push("apply"),
 				renderCurrentSessionState: () => events.push("render"),
 				bindCurrentSessionExtensions: async () => {
@@ -292,6 +310,7 @@ describe("regression #5943: session_start transient UI", () => {
 
 		try {
 			const context: RebindContext = {
+				...createRebindState(),
 				applyRuntimeSettings: () => {},
 				renderCurrentSessionState: () => events.push("render"),
 				bindCurrentSessionExtensions: async () => {
@@ -344,6 +363,7 @@ describe("regression #5943: session_start transient UI", () => {
 
 		try {
 			const context: RebindContext = {
+				...createRebindState(),
 				applyRuntimeSettings: () => {},
 				renderCurrentSessionState: () => events.push("render"),
 				bindCurrentSessionExtensions: async () => {

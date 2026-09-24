@@ -64,6 +64,10 @@ export class ScrollView extends Container {
 		return this.followingEnd;
 	}
 
+	get isFollowSuppressed(): boolean {
+		return this.followSuppressed;
+	}
+
 	get isAtEnd(): boolean {
 		return this.currentScrollTop >= Math.max(0, this.contentHeight - this.currentViewportHeight);
 	}

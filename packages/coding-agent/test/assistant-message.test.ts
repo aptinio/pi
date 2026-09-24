@@ -241,6 +241,33 @@ describe("AssistantMessageComponent", () => {
 		expect(collapsed).toContain("second reasoning");
 	});
 
+	test("restores individual thinking visibility by durable content position", () => {
+		initTheme("dark");
+		const message = createAssistantMessage([
+			{ type: "thinking", thinking: "first reasoning" },
+			{ type: "text", text: "answer" },
+			{ type: "thinking", thinking: "second reasoning" },
+		]);
+		const component = new AssistantMessageComponent(message, true);
+		component.restoreThinkingVisibilityOverrides(
+			new Map([
+				[0, false],
+				[2, true],
+			]),
+		);
+
+		expect(component.getThinkingVisibilityOverrides()).toEqual(
+			new Map([
+				[0, false],
+				[2, true],
+			]),
+		);
+		const rendered = stripAnsi(component.render(80).join("\n"));
+		expect(rendered).toContain("first reasoning");
+		expect(rendered).not.toContain("second reasoning");
+		expect(rendered).toContain("Thinking...");
+	});
+
 	test("uses configured output padding for text and thinking", () => {
 		initTheme("dark");
 

@@ -233,6 +233,10 @@ export class AltScreenSearchComponent implements Component, Focusable {
 		this.resultCount = count;
 	}
 
+	setQuery(query: string): void {
+		this.input.setValue(query);
+	}
+
 	getNavigationDirectionAt(row: number, column: number): -1 | 1 | undefined {
 		if (row !== 2) return undefined;
 		if (column >= this.previousButtonStart && column < this.previousButtonEnd) return -1;

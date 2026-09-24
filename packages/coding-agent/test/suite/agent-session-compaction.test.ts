@@ -133,6 +133,25 @@ describe("AgentSession compaction characterization", () => {
 		}
 	});
 
+	it("reports exact persisted identities for live source messages", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("reply")]);
+		const identities: Array<{ entryId: string; sourceMessage?: AgentMessage }> = [];
+		const unsubscribe = harness.session.subscribePersistedEntries(({ entryId, sourceMessage }) => {
+			identities.push({ entryId, sourceMessage });
+		});
+
+		await harness.session.prompt("request");
+		unsubscribe();
+
+		const messageEntries = harness.sessionManager.getEntries().filter((entry) => entry.type === "message");
+		expect(identities.map((identity) => identity.entryId)).toEqual(messageEntries.map((entry) => entry.id));
+		for (const [index, identity] of identities.entries()) {
+			expect(identity.sourceMessage).toBe(messageEntries[index]?.message);
+		}
+	});
+
 	it("manually compacts using an extension-provided summary", async () => {
 		const summaryUsage = {
 			input: 10,
@@ -163,8 +182,13 @@ describe("AgentSession compaction characterization", () => {
 		await harness.session.prompt("one");
 		await harness.session.prompt("two");
 		const statsBefore = harness.session.getSessionStats();
+		const persistedCompactionIds: string[] = [];
+		const unsubscribe = harness.session.subscribePersistedEntries(({ entry }) => {
+			if (entry.type === "compaction") persistedCompactionIds.push(entry.id);
+		});
 
 		const result = await harness.session.compact();
+		unsubscribe();
 		const compactionEntries = harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction");
 		const estimatedTokensAfter = harness.session.messages.reduce((sum, message) => sum + estimateTokens(message), 0);
 
@@ -173,6 +197,8 @@ describe("AgentSession compaction characterization", () => {
 		expect(result.estimatedTokensAfter).toBe(estimatedTokensAfter);
 		expect(compactionEntries).toHaveLength(1);
 		const compactionEntry = compactionEntries[0];
+		expect(persistedCompactionIds).toEqual([compactionEntry?.id]);
+		expect(harness.eventsOfType("compaction_end").at(-1)?.entryId).toBe(compactionEntry?.id);
 		if (compactionEntry?.type === "compaction") {
 			expect(compactionEntry.usage).toEqual(summaryUsage);
 		}
