@@ -168,6 +168,42 @@ export function isFocusable(component: Component | null): component is Component
  * TUI finds and strips this marker, then positions the hardware cursor there.
  */
 export const CURSOR_MARKER = "\x1b_pi:c\x07";
+const TRANSCRIPT_ENTRY_MARKER_PREFIX = "\x1b_pi:e:";
+const TRANSCRIPT_ENTRY_MARKER = /\x1b_pi:e:[0-9a-f]*\x07/g;
+
+export interface DecodedTranscriptEntryMarker {
+	readonly entryId: string;
+	readonly prefixLength: number;
+}
+
+/** Encode durable transcript identity as a zero-width APC sequence. */
+export function encodeTranscriptEntryMarker(entryId: string): string {
+	const encoded = Array.from(new TextEncoder().encode(entryId), (byte) => byte.toString(16).padStart(2, "0")).join("");
+	return `${TRANSCRIPT_ENTRY_MARKER_PREFIX}${encoded}\x07`;
+}
+
+/** Decode a transcript marker at the beginning of a rendered line suffix. */
+export function decodeTranscriptEntryMarkerPrefix(line: string): DecodedTranscriptEntryMarker | undefined {
+	if (!line.startsWith(TRANSCRIPT_ENTRY_MARKER_PREFIX)) return undefined;
+	const end = line.indexOf("\x07", TRANSCRIPT_ENTRY_MARKER_PREFIX.length);
+	if (end < 0) return undefined;
+	const encoded = line.slice(TRANSCRIPT_ENTRY_MARKER_PREFIX.length, end);
+	if (encoded.length % 2 !== 0 || !/^[0-9a-f]*$/.test(encoded)) return undefined;
+	const bytes = new Uint8Array(encoded.length / 2);
+	for (let index = 0; index < bytes.length; index++) {
+		bytes[index] = Number.parseInt(encoded.slice(index * 2, index * 2 + 2), 16);
+	}
+	try {
+		return { entryId: new TextDecoder("utf-8", { fatal: true }).decode(bytes), prefixLength: end + 1 };
+	} catch {
+		return undefined;
+	}
+}
+
+/** Strip internal transcript identity markers before terminal output. */
+export function stripTranscriptEntryMarkers(line: string): string {
+	return line.replace(TRANSCRIPT_ENTRY_MARKER, "");
+}
 
 export { visibleWidth };
 
@@ -455,9 +491,27 @@ export interface TUI extends Component {
 
 export const VIEWPORT_TUI = Symbol.for("@earendil-works/pi-tui/viewport");
 
+export interface TranscriptViewState {
+	readonly sessionId: string;
+	readonly selectedEntryId?: string;
+	/** Row offset within the entry, or a negative offset into stable content before the first entry. */
+	readonly viewportAnchor?: { entryId: string; rowOffset: number };
+	readonly followingEnd: boolean;
+	readonly followSuppressed: boolean;
+	readonly search?: {
+		query: string;
+		current?: { entryId: string; occurrence: number };
+	};
+}
+
 export interface ViewportTUI extends TUI {
 	readonly [VIEWPORT_TUI]: true;
 	setLayoutRoot(component: Component | undefined): void;
+	hasBlockingOverlayEntries(): boolean;
+	setTranscriptSessionId(sessionId: string): void;
+	captureTranscriptViewState(): TranscriptViewState;
+	restoreTranscriptViewState(state: TranscriptViewState): void;
+	clearTranscriptViewState(options?: { followEnd?: boolean }): void;
 	clearPromptSelection(options?: { followEnd?: boolean }): void;
 }
 
@@ -496,6 +550,10 @@ export abstract class TuiBase extends Container implements TUI {
 
 	get hasOverlayEntries(): boolean {
 		return this.overlayStack.length > 0;
+	}
+
+	protected get overlayEntryCount(): number {
+		return this.overlayStack.length;
 	}
 	private overlayFocusRestore: OverlayFocusRestoreState = { status: "inactive" };
 

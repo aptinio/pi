@@ -1,12 +1,19 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
-import { Container, Text, type TUI } from "@earendil-works/pi-tui";
+import { type Component, Container, type TUI } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../../src/core/agent-session.ts";
 import type { SessionEntry } from "../../../src/core/session-manager.ts";
-import type { ToolExecutionComponent } from "../../../src/modes/interactive/components/tool-execution.ts";
+import { AssistantMessageComponent } from "../../../src/modes/interactive/components/assistant-message.ts";
+import { AssistantTranscriptGroup } from "../../../src/modes/interactive/components/assistant-transcript-group.ts";
+import type {
+	ToolExecutionComponent,
+	ToolExpansionState,
+} from "../../../src/modes/interactive/components/tool-execution.ts";
+import type { TranscriptEntryComponent } from "../../../src/modes/interactive/components/transcript-entry.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { getMarkdownTheme, initTheme } from "../../../src/modes/interactive/theme/theme.ts";
+import type { TranscriptItem } from "../../../src/modes/interactive/transcript-projection.ts";
 import { stripAnsi } from "../../../src/utils/ansi.ts";
 
 const TOOL_CALL_ID = "tool-4167";
@@ -30,14 +37,12 @@ const EMPTY_USAGE: Usage = {
 	},
 };
 
-type RenderSessionItems = (
-	this: RenderSessionContextThis,
-	items: AgentMessage[],
-	options?: { updateFooter?: boolean; populateHistory?: boolean },
-) => void;
-
 type RenderSessionContextThis = {
 	pendingTools: Map<string, ToolExecutionComponent>;
+	liveTools: Map<string, ToolExecutionComponent>;
+	streamingComponent?: AssistantMessageComponent;
+	streamingGroup?: AssistantTranscriptGroup;
+	streamingMessage?: AssistantMessage;
 	chatContainer: Container;
 	footer: { invalidate(): void };
 	ui: TUI;
@@ -47,26 +52,64 @@ type RenderSessionContextThis = {
 		getShowCacheMissNotices(): boolean;
 	};
 	sessionManager: { getCwd(): string; getEntries(): SessionEntry[] };
-	session: { retryAttempt: number; modelRegistry: { find(provider: string, modelId: string): undefined } };
+	session: {
+		retryAttempt: number;
+		modelRuntime: object;
+		extensionRunner: { getMessageRenderer(): undefined };
+	};
 	toolOutputExpanded: boolean;
 	hideThinkingBlock: boolean;
 	hiddenThinkingLabel: string;
 	outputPad: number;
 	isInitialized: boolean;
 	updateEditorBorderColor(): void;
+	maybeSuggestBugReport(message: AssistantMessage): void;
+	maybeShowThinkingDropNotice(message: AssistantMessage): void;
+	maybeShowCacheMissNotice(message: AssistantMessage): void;
 	getMarkdownThemeWithSettings(): ReturnType<typeof getMarkdownTheme>;
 	getMarkdownTransformers(): [];
 	getRegisteredToolDefinition(toolName: string): undefined;
-	maybeShowAssistantDiagnostics(message: AssistantMessage): void;
-	addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void;
-	renderSessionItems: RenderSessionItems;
+	editor: { addToHistory(text: string): void };
+	transcriptEntries: Map<string, TranscriptEntryComponent>;
+	assistantComponents: Map<string, AssistantMessageComponent>;
+	toolComponents: Map<string, ToolExecutionComponent>;
+	expandableTranscriptComponents: Map<string, { setExpanded(expanded: boolean): void; isExpanded(): boolean }>;
+	restoringExpansionState:
+		| {
+				tools: Map<string, ToolExpansionState>;
+				thinking: Map<string, ReadonlyMap<number, boolean>>;
+				expandable: Map<string, boolean>;
+		  }
+		| undefined;
+	persistedEntryIdsByMessage: WeakMap<object, string>;
+	renderedEntriesByMessage: WeakMap<object, TranscriptEntryComponent>;
+	createTranscriptEntry(entryId: string | undefined, children: readonly Component[]): TranscriptEntryComponent;
+	registerTranscriptEntry(component: TranscriptEntryComponent): void;
+	registerAssistantComponent(entryId: string, component: AssistantMessageComponent): void;
+	registerToolComponent(
+		assistantEntryId: string,
+		contentIndex: number,
+		toolCallId: string,
+		component: ToolExecutionComponent,
+		preserveCurrent?: boolean,
+	): void;
+	getToolStateKey(assistantEntryId: string, contentIndex: number, toolCallId: string): string;
+	createToolComponent(toolName: string, toolCallId: string, args: unknown): ToolExecutionComponent;
+	addMessageToChat(
+		message: AgentMessage,
+		options?: { entryId?: string; populateHistory?: boolean },
+	): TranscriptEntryComponent | undefined;
+	renderTranscriptItems(
+		items: readonly TranscriptItem[],
+		options?: { updateFooter?: boolean; populateHistory?: boolean },
+	): void;
 };
 
 type AddMessageToChat = (
 	this: RenderSessionContextThis,
 	message: AgentMessage,
-	options?: { populateHistory?: boolean },
-) => void;
+	options?: { entryId?: string; populateHistory?: boolean },
+) => TranscriptEntryComponent | undefined;
 
 type RenderSessionEntries = (
 	this: RenderSessionContextThis,
@@ -78,8 +121,12 @@ type HandleEvent = (this: RenderSessionContextThis, event: AgentSessionEvent) =>
 
 function createFakeInteractiveModeThis(): RenderSessionContextThis {
 	const chatContainer = new Container();
-	return {
+	const context = {
 		pendingTools: new Map<string, ToolExecutionComponent>(),
+		liveTools: new Map<string, ToolExecutionComponent>(),
+		streamingComponent: undefined,
+		streamingGroup: undefined,
+		streamingMessage: undefined,
 		chatContainer,
 		footer: { invalidate: vi.fn() },
 		ui: { requestRender: vi.fn() } as unknown as TUI,
@@ -89,23 +136,55 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 			getShowCacheMissNotices: () => false,
 		},
 		sessionManager: { getCwd: () => process.cwd(), getEntries: () => [] },
-		session: { retryAttempt: 0, modelRegistry: { find: () => undefined } },
+		session: {
+			retryAttempt: 0,
+			modelRuntime: {},
+			extensionRunner: { getMessageRenderer: () => undefined },
+		},
 		toolOutputExpanded: false,
 		hideThinkingBlock: false,
 		hiddenThinkingLabel: "Thinking...",
 		outputPad: 1,
 		isInitialized: true,
 		updateEditorBorderColor: vi.fn(),
+		maybeSuggestBugReport: vi.fn(),
+		maybeShowThinkingDropNotice: vi.fn(),
+		maybeShowCacheMissNotice: vi.fn(),
 		getMarkdownThemeWithSettings: getMarkdownTheme,
 		getMarkdownTransformers: () => [],
 		getRegisteredToolDefinition: (_toolName: string) => undefined,
-		maybeShowAssistantDiagnostics: vi.fn(),
-		renderSessionItems: (InteractiveMode.prototype as unknown as { renderSessionItems: RenderSessionItems })
-			.renderSessionItems,
-		addMessageToChat(message: AgentMessage) {
-			chatContainer.addChild(new Text(message.role, 0, 0));
-		},
+		editor: { addToHistory: vi.fn() },
+		transcriptEntries: new Map<string, TranscriptEntryComponent>(),
+		assistantComponents: new Map<string, AssistantMessageComponent>(),
+		toolComponents: new Map<string, ToolExecutionComponent>(),
+		expandableTranscriptComponents: new Map<
+			string,
+			{ setExpanded(expanded: boolean): void; isExpanded(): boolean }
+		>(),
+		restoringExpansionState: undefined,
+		persistedEntryIdsByMessage: new WeakMap<object, string>(),
+		renderedEntriesByMessage: new WeakMap<object, TranscriptEntryComponent>(),
+	} as unknown as RenderSessionContextThis;
+
+	const prototype = InteractiveMode.prototype as unknown as {
+		createTranscriptEntry: RenderSessionContextThis["createTranscriptEntry"];
+		registerTranscriptEntry: RenderSessionContextThis["registerTranscriptEntry"];
+		registerAssistantComponent: RenderSessionContextThis["registerAssistantComponent"];
+		registerToolComponent: RenderSessionContextThis["registerToolComponent"];
+		getToolStateKey: RenderSessionContextThis["getToolStateKey"];
+		createToolComponent: RenderSessionContextThis["createToolComponent"];
+		addMessageToChat: AddMessageToChat;
+		renderTranscriptItems: RenderSessionContextThis["renderTranscriptItems"];
 	};
+	context.createTranscriptEntry = prototype.createTranscriptEntry;
+	context.registerTranscriptEntry = prototype.registerTranscriptEntry;
+	context.registerAssistantComponent = prototype.registerAssistantComponent;
+	context.registerToolComponent = prototype.registerToolComponent;
+	context.getToolStateKey = prototype.getToolStateKey;
+	context.createToolComponent = prototype.createToolComponent;
+	context.addMessageToChat = (message, options) => prototype.addMessageToChat.call(context, message, options);
+	context.renderTranscriptItems = prototype.renderTranscriptItems;
+	return context;
 }
 
 function createAssistantToolCallMessage(): AssistantMessage {
@@ -208,6 +287,7 @@ describe("InteractiveMode.renderSessionEntries", () => {
 			InteractiveMode.prototype as unknown as { renderSessionEntries: RenderSessionEntries }
 		).renderSessionEntries;
 		const handleEvent = (InteractiveMode.prototype as unknown as { handleEvent: HandleEvent }).handleEvent;
+		fakeThis.liveTools.set(TOOL_CALL_ID, fakeThis.createToolComponent(TOOL_NAME, TOOL_CALL_ID, { delayMs: 10_000 }));
 
 		renderSessionEntries.call(fakeThis, createSessionEntries([createAssistantToolCallMessage()]));
 
@@ -225,6 +305,27 @@ describe("InteractiveMode.renderSessionEntries", () => {
 		expect(renderChat(fakeThis.chatContainer)).toContain("FINAL_RESULT");
 	});
 
+	test("drops aborted live tools so rebuilds cannot resurrect them", async () => {
+		const fakeThis = createFakeInteractiveModeThis();
+		const message = { ...createAssistantToolCallMessage(), stopReason: "aborted" as const };
+		const assistant = new AssistantMessageComponent(message, false);
+		const group = new AssistantTranscriptGroup(undefined, message, assistant);
+		const tool = fakeThis.createToolComponent(TOOL_NAME, TOOL_CALL_ID, { delayMs: 10_000 });
+		group.addTool(TOOL_CALL_ID, tool);
+		fakeThis.streamingComponent = assistant;
+		fakeThis.streamingGroup = group;
+		fakeThis.streamingMessage = message;
+		fakeThis.pendingTools.set(TOOL_CALL_ID, tool);
+		fakeThis.liveTools.set(TOOL_CALL_ID, tool);
+		const handleEvent = (InteractiveMode.prototype as unknown as { handleEvent: HandleEvent }).handleEvent;
+
+		await handleEvent.call(fakeThis, { type: "message_end", message });
+
+		expect(fakeThis.pendingTools.has(TOOL_CALL_ID)).toBe(false);
+		expect(fakeThis.liveTools.has(TOOL_CALL_ID)).toBe(false);
+		expect(stripAnsi(tool.render(120).join("\n"))).toContain("Operation aborted");
+	});
+
 	test("does not keep completed historical tool calls registered as pending", () => {
 		const fakeThis = createFakeInteractiveModeThis();
 		const renderSessionEntries = (
@@ -238,5 +339,30 @@ describe("InteractiveMode.renderSessionEntries", () => {
 
 		expect(fakeThis.pendingTools.size).toBe(0);
 		expect(renderChat(fakeThis.chatContainer)).toContain("HISTORICAL_RESULT");
+	});
+
+	test("renders duplicate historical tool-call IDs as separate content-position components", () => {
+		const fakeThis = createFakeInteractiveModeThis();
+		const renderSessionEntries = (
+			InteractiveMode.prototype as unknown as { renderSessionEntries: RenderSessionEntries }
+		).renderSessionEntries;
+		const message = createAssistantToolCallMessage();
+		message.content = [
+			{ type: "toolCall", id: TOOL_CALL_ID, name: TOOL_NAME, arguments: { position: 1 } },
+			{ type: "toolCall", id: TOOL_CALL_ID, name: TOOL_NAME, arguments: { position: 2 } },
+		];
+
+		renderSessionEntries.call(
+			fakeThis,
+			createSessionEntries([
+				message,
+				createToolResultMessage("FIRST_DUPLICATE_RESULT"),
+				createToolResultMessage("SECOND_DUPLICATE_RESULT"),
+			]),
+		);
+
+		expect(fakeThis.toolComponents.size).toBe(2);
+		expect(renderChat(fakeThis.chatContainer)).toContain("FIRST_DUPLICATE_RESULT");
+		expect(renderChat(fakeThis.chatContainer)).toContain("SECOND_DUPLICATE_RESULT");
 	});
 });

@@ -132,6 +132,7 @@ export {
 	type OverlayOptions,
 	type OverlayUnfocusOptions,
 	type SizeValue,
+	type TranscriptViewState,
 	type TUI,
 	type TuiInputListener,
 	type TuiInputListenerResult,

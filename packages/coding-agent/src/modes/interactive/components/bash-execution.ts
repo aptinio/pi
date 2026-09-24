@@ -18,8 +18,20 @@ import { truncateToVisualLines } from "./visual-truncate.ts";
 // Preview line limit when not expanded (matches tool execution behavior)
 const PREVIEW_LINES = 20;
 
+export interface BashExecutionSnapshot {
+	readonly command: string;
+	readonly excludeFromContext: boolean;
+	readonly output: string;
+	readonly status: "running" | "complete" | "cancelled" | "error";
+	readonly exitCode?: number;
+	readonly truncationResult?: TruncationResult;
+	readonly fullOutputPath?: string;
+	readonly expanded: boolean;
+}
+
 export class BashExecutionComponent extends Container {
 	private command: string;
+	private readonly excludeFromContext: boolean;
 	private outputLines: string[] = [];
 	private status: "running" | "complete" | "cancelled" | "error" = "running";
 	private exitCode: number | undefined = undefined;
@@ -32,6 +44,7 @@ export class BashExecutionComponent extends Container {
 	constructor(command: string, ui: TUI, excludeFromContext = false) {
 		super();
 		this.command = command;
+		this.excludeFromContext = excludeFromContext;
 
 		// Use dim border for excluded-from-context commands (!! prefix)
 		const colorKey = excludeFromContext ? "dim" : "bashMode";
@@ -69,6 +82,34 @@ export class BashExecutionComponent extends Container {
 	 */
 	setExpanded(expanded: boolean): void {
 		this.expanded = expanded;
+		this.updateDisplay();
+	}
+
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+
+	getSnapshot(): BashExecutionSnapshot {
+		return {
+			command: this.command,
+			excludeFromContext: this.excludeFromContext,
+			output: this.getOutput(),
+			status: this.status,
+			...(this.exitCode === undefined ? {} : { exitCode: this.exitCode }),
+			...(this.truncationResult ? { truncationResult: this.truncationResult } : {}),
+			...(this.fullOutputPath ? { fullOutputPath: this.fullOutputPath } : {}),
+			expanded: this.expanded,
+		};
+	}
+
+	restoreSnapshot(snapshot: BashExecutionSnapshot): void {
+		this.outputLines = snapshot.output ? snapshot.output.split("\n") : [];
+		this.status = snapshot.status;
+		this.exitCode = snapshot.exitCode;
+		this.truncationResult = snapshot.truncationResult;
+		this.fullOutputPath = snapshot.fullOutputPath;
+		this.expanded = snapshot.expanded;
+		if (snapshot.status !== "running") this.loader.stop();
 		this.updateDisplay();
 	}
 

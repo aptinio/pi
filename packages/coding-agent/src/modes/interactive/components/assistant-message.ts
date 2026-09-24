@@ -106,6 +106,15 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
+	getThinkingVisibilityOverrides(): ReadonlyMap<number, boolean> {
+		return new Map(this.thinkingVisibilityOverrides);
+	}
+
+	restoreThinkingVisibilityOverrides(overrides: ReadonlyMap<number, boolean>): void {
+		this.thinkingVisibilityOverrides = new Map(overrides);
+		if (this.lastMessage) this.updateContent(this.lastMessage);
+	}
+
 	override render(width: number): string[] {
 		const lines = super.render(width);
 
@@ -139,7 +148,6 @@ export class AssistantMessageComponent extends Container {
 		}
 
 		// Render content in order
-		let thinkingRunIndex = 0;
 		for (let i = 0; i < message.content.length; i++) {
 			const content = message.content[i];
 			if (content.type === "text" && content.text.trim()) {
@@ -151,6 +159,7 @@ export class AssistantMessageComponent extends Container {
 					}),
 				);
 			} else if (content.type === "thinking") {
+				const firstThinkingContentIndex = i;
 				const thinkingBlocks: string[] = [];
 				for (; i < message.content.length; i++) {
 					const thinkingContent = message.content[i];
@@ -174,8 +183,7 @@ export class AssistantMessageComponent extends Container {
 					.slice(i + 1)
 					.some((c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()));
 
-				const runIndex = thinkingRunIndex++;
-				const hidden = this.thinkingVisibilityOverrides.get(runIndex) ?? this.hideThinkingBlock;
+				const hidden = this.thinkingVisibilityOverrides.get(firstThinkingContentIndex) ?? this.hideThinkingBlock;
 				const thinkingComponent = hidden
 					? new Text(theme.italic(theme.fg("thinkingText", this.hiddenThinkingLabel)), this.outputPad, 0)
 					: new Markdown(
@@ -198,7 +206,7 @@ export class AssistantMessageComponent extends Container {
 				this.contentContainer.addChild(
 					new MouseRegion(thinkingComponent, (event) => {
 						if (event.type !== "click" || event.button !== "left") return undefined;
-						this.thinkingVisibilityOverrides.set(runIndex, !hidden);
+						this.thinkingVisibilityOverrides.set(firstThinkingContentIndex, !hidden);
 						if (this.lastMessage) this.updateContent(this.lastMessage);
 						return { handled: true, preserveViewport: true };
 					}),

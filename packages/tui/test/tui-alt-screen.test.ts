@@ -20,12 +20,23 @@ import {
 	resetCapabilitiesCache,
 	setCapabilities,
 } from "../src/terminal-image.ts";
-import type { TuiMouseEvent } from "../src/tui.ts";
+import {
+	decodeTranscriptEntryMarkerPrefix,
+	encodeTranscriptEntryMarker,
+	type TranscriptViewState,
+	type TuiMouseEvent,
+} from "../src/tui.ts";
 import { TuiAltScreen } from "../src/tui-alt-screen.ts";
 import { stripTerminalSequences, visibleWidth } from "../src/utils.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
+const OSC133_ZONE_END = "\x1b]133;B\x07";
+const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
+
+function markedPrompt(entryId: string, text: string): string {
+	return `${OSC133_ZONE_START}${OSC133_ZONE_END}${OSC133_ZONE_FINAL}${encodeTranscriptEntryMarker(entryId)}${text}`;
+}
 
 class InputOverlay {
 	focused = false;
@@ -377,6 +388,7 @@ describe("TuiAltScreen", () => {
 		};
 		tui.setLayoutRoot(new Text("root", 0, 0));
 		tui.showOverlay(overlay);
+		assert.strictEqual(tui.hasBlockingOverlayEntries(), true);
 
 		tui.invalidate();
 
@@ -983,6 +995,8 @@ describe("TuiAltScreen", () => {
 		terminal.sendInput("\x1b[102;6u");
 		terminal.sendInput("needle");
 		await terminal.waitForRender();
+		assert.strictEqual(tui.hasOverlayEntries, true);
+		assert.strictEqual(tui.hasBlockingOverlayEntries(), false);
 		assert.strictEqual(transcript.isFollowingEnd, false);
 		assert.ok(terminal.getViewport().some((line) => line.includes("2/2")));
 		assert.ok(terminal.getViewport().some((line) => line.includes("↑ Shift+Enter · ↓ Enter")));
@@ -1009,6 +1023,8 @@ describe("TuiAltScreen", () => {
 
 		terminal.sendInput("\x1b");
 		await terminal.waitForRender();
+		assert.strictEqual(tui.hasOverlayEntries, false);
+		assert.strictEqual(tui.hasBlockingOverlayEntries(), false);
 		terminal.resize(60, 13);
 		await terminal.waitForRender();
 		assert.strictEqual(transcript.isAtEnd, true);
@@ -1472,6 +1488,215 @@ describe("TuiAltScreen", () => {
 			.join("");
 		assert.ok(!clearWrites.includes("\x1b[45m"));
 		tui.stop();
+	});
+
+	it("encodes arbitrary transcript entry IDs as zero-width APC markers", () => {
+		const entryId = "entry:with\\control\x07 and Unicode 界";
+		const marker = encodeTranscriptEntryMarker(entryId);
+
+		assert.deepStrictEqual(decodeTranscriptEntryMarkerPrefix(`${marker}content`), {
+			entryId,
+			prefixLength: marker.length,
+		});
+		assert.strictEqual(visibleWidth(marker), 0);
+		assert.strictEqual(stripTerminalSequences(`${marker}content`), "content");
+	});
+
+	it("restores semantic selection and viewport by entry ID after rows are inserted", async () => {
+		const terminal = new VirtualTerminal(20, 2);
+		let lines = [
+			markedPrompt("entry-1", "message one"),
+			"detail one",
+			markedPrompt("entry-2", "message two"),
+			"detail two",
+			markedPrompt("entry-3", "message three"),
+			"detail three",
+		];
+		const content = { render: () => lines, invalidate: () => {} };
+		const tui = new TuiAltScreen(terminal);
+		tui.setTranscriptSessionId("session-1");
+		tui.addChild(content);
+		tui.start();
+		await terminal.waitForRender();
+
+		const state: TranscriptViewState = {
+			sessionId: "session-1",
+			selectedEntryId: "entry-2",
+			viewportAnchor: { entryId: "entry-2", rowOffset: 1 },
+			followingEnd: false,
+			followSuppressed: true,
+		};
+		tui.restoreTranscriptViewState(state);
+		await terminal.waitForRender();
+		assert.deepStrictEqual(tui.captureTranscriptViewState(), state);
+		assert.strictEqual(tui.viewportTop, 3);
+
+		lines = [markedPrompt("entry-0", "inserted"), "inserted detail", ...lines];
+		tui.restoreTranscriptViewState(state);
+		await terminal.waitForRender();
+		assert.deepStrictEqual(tui.captureTranscriptViewState(), state);
+		assert.strictEqual(tui.viewportTop, 5);
+		tui.stop();
+	});
+
+	it("preserves a viewport above the first transcript entry with a negative entry offset", async () => {
+		const terminal = new VirtualTerminal(20, 2);
+		const content = new Text(
+			["header", "resources", markedPrompt("entry-1", "message one"), "detail one", "tail"].join("\n"),
+			0,
+			0,
+		);
+		const tui = new TuiAltScreen(terminal);
+		tui.setTranscriptSessionId("session-1");
+		tui.addChild(content);
+		tui.start();
+		await terminal.waitForRender();
+
+		const state: TranscriptViewState = {
+			sessionId: "session-1",
+			viewportAnchor: { entryId: "entry-1", rowOffset: -2 },
+			followingEnd: false,
+			followSuppressed: true,
+		};
+		tui.restoreTranscriptViewState(state);
+		await terminal.waitForRender();
+
+		assert.strictEqual(tui.viewportTop, 0);
+		assert.deepStrictEqual(tui.captureTranscriptViewState(), state);
+		tui.stop();
+	});
+
+	it("keeps a viewport at the end detached from follow mode", async () => {
+		const terminal = new VirtualTerminal(20, 2);
+		const tui = new TuiAltScreen(terminal);
+		tui.setTranscriptSessionId("session-1");
+		tui.addChild(
+			new Text(
+				[
+					markedPrompt("entry-1", "message one"),
+					"detail one",
+					markedPrompt("entry-2", "message two"),
+					"detail two",
+				].join("\n"),
+				0,
+				0,
+			),
+		);
+		tui.start();
+		await terminal.waitForRender();
+
+		const state: TranscriptViewState = {
+			sessionId: "session-1",
+			viewportAnchor: { entryId: "entry-2", rowOffset: 0 },
+			followingEnd: false,
+			followSuppressed: false,
+		};
+		tui.restoreTranscriptViewState(state);
+		await terminal.waitForRender();
+
+		assert.strictEqual(tui.viewportTop, 2);
+		assert.deepStrictEqual(tui.captureTranscriptViewState(), state);
+		tui.stop();
+	});
+
+	it("clears missing selection independently while retaining a surviving viewport anchor", async () => {
+		const terminal = new VirtualTerminal(20, 2);
+		let lines = [
+			markedPrompt("selected", "selected"),
+			"selected detail",
+			markedPrompt("anchor", "anchor"),
+			"anchor detail",
+			markedPrompt("tail", "tail"),
+			"tail detail",
+		];
+		const content = { render: () => lines, invalidate: () => {} };
+		const tui = new TuiAltScreen(terminal);
+		tui.setTranscriptSessionId("session-1");
+		tui.addChild(content);
+		tui.start();
+		await terminal.waitForRender();
+
+		lines = lines.slice(2);
+		tui.restoreTranscriptViewState({
+			sessionId: "session-1",
+			selectedEntryId: "selected",
+			viewportAnchor: { entryId: "anchor", rowOffset: 1 },
+			followingEnd: false,
+			followSuppressed: true,
+		});
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(tui.captureTranscriptViewState(), {
+			sessionId: "session-1",
+			viewportAnchor: { entryId: "anchor", rowOffset: 1 },
+			followingEnd: false,
+			followSuppressed: true,
+		});
+		assert.strictEqual(tui.viewportTop, 1);
+		tui.stop();
+	});
+
+	it("restores search by entry identity and occurrence", async () => {
+		const terminal = new VirtualTerminal(30, 3);
+		let lines = [
+			markedPrompt("entry-1", "needle first"),
+			markedPrompt("entry-2", "needle second needle"),
+			markedPrompt("entry-3", "needle third"),
+			"tail",
+		];
+		const content = { render: () => lines, invalidate: () => {} };
+		const tui = new TuiAltScreen(terminal);
+		tui.setTranscriptSessionId("session-1");
+		tui.addChild(content);
+		tui.start();
+		await terminal.waitForRender();
+
+		const state: TranscriptViewState = {
+			sessionId: "session-1",
+			viewportAnchor: { entryId: "entry-2", rowOffset: 0 },
+			followingEnd: false,
+			followSuppressed: true,
+			search: { query: "needle", current: { entryId: "entry-2", occurrence: 1 } },
+		};
+		tui.restoreTranscriptViewState(state);
+		await terminal.waitForRender();
+		assert.deepStrictEqual(tui.captureTranscriptViewState(), state);
+
+		lines = [markedPrompt("inserted", "needle inserted"), ...lines];
+		tui.restoreTranscriptViewState(state);
+		await terminal.waitForRender();
+		assert.deepStrictEqual(tui.captureTranscriptViewState(), state);
+		tui.stop();
+	});
+
+	it("rejects transcript state from another session and removes markers from terminal output", async () => {
+		const terminal = new RecordingTerminal(30, 2);
+		const marker = encodeTranscriptEntryMarker("entry-1");
+		const tui = new TuiAltScreen(terminal);
+		tui.setTranscriptSessionId("session-2");
+		tui.addChild(new Text(`${markedPrompt("entry-1", "visible")}\ndetail`, 0, 0));
+		tui.start();
+		await terminal.waitForRender();
+
+		tui.restoreTranscriptViewState({
+			sessionId: "session-1",
+			selectedEntryId: "entry-1",
+			viewportAnchor: { entryId: "entry-1", rowOffset: 0 },
+			followingEnd: false,
+			followSuppressed: true,
+			search: { query: "visible", current: { entryId: "entry-1", occurrence: 0 } },
+		});
+		await terminal.waitForRender();
+		assert.deepStrictEqual(tui.captureTranscriptViewState(), {
+			sessionId: "session-2",
+			viewportAnchor: { entryId: "entry-1", rowOffset: 0 },
+			followingEnd: true,
+			followSuppressed: false,
+		});
+		assert.ok(terminal.events.every((event) => event.type !== "write" || !event.data.includes(marker)));
+
+		tui.stop();
+		assert.ok(terminal.events.every((event) => event.type !== "write" || !event.data.includes(marker)));
 	});
 
 	it("does not emit Kitty graphics commands or OSC 133 zones in iTerm2", async () => {

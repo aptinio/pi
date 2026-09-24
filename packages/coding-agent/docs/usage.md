@@ -83,7 +83,7 @@ Use `/share` to upload the session and get a viewer link. With Radius authentica
 
 ## Adjust the terminal
 
-Regular mode uses the terminal's normal scrollback. Fullscreen mode keeps the editor and status area fixed while the transcript scrolls within the terminal window. Choose a mode through `/settings` or `--tui-mode`.
+Regular mode uses the terminal's normal scrollback and shows the compaction-aware context transcript. Fullscreen mode keeps the editor and status area fixed and reads the complete visual history of the active session branch, including messages before compaction. Compaction summaries appear as chronological expandable boundaries without replacing earlier fullscreen history. Choose a mode through `/settings` or `--tui-mode`.
 
 Terminal support for mouse input, keyboard shortcuts, and inline images varies. See [Terminal Setup](terminal-setup.md) for platform-specific configuration and [Keybindings](keybindings.md) for every configurable shortcut. Run `/hotkeys` to inspect the shortcuts active in your current session.
 

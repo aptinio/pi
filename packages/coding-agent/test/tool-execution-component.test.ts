@@ -70,6 +70,40 @@ describe("ToolExecutionComponent parity", () => {
 		vi.useRealTimers();
 	});
 
+	test("restores transient execution and expansion state without renderer component references", () => {
+		const original = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-snapshot",
+			{ value: 1 },
+			{},
+			undefined,
+			createFakeTui(),
+			process.cwd(),
+		);
+		original.markExecutionStarted();
+		original.setArgsComplete();
+		original.setExpansionState("preview");
+		original.updateResult(
+			{ content: [{ type: "text", text: "partial output" }], details: { phase: 1 }, isError: false },
+			true,
+		);
+
+		const restored = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-snapshot",
+			{},
+			{},
+			undefined,
+			createFakeTui(),
+			process.cwd(),
+		);
+		restored.restoreSnapshot(original.getSnapshot());
+
+		expect(restored.getSnapshot()).toEqual(original.getSnapshot());
+		expect(restored.getExpansionState()).toBe("preview");
+		expect(stripAnsi(restored.render(120).join("\n"))).toContain("partial output");
+	});
+
 	// Issue #8577: ignore conversions that finish after the image was replaced.
 	test("keeps the final tool image when a partial image conversion finishes late", async () => {
 		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });

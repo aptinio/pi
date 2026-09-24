@@ -4,8 +4,12 @@ import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode
 type RebindContext = {
 	session: object;
 	unsubscribe?: () => void;
+	unsubscribePersistedEntries?: () => void;
+	transcriptExpansionStateSessionId: string;
+	getTranscriptSessionId: () => string;
+	renderer: object;
 	applyRuntimeSettings: () => void;
-	renderCurrentSessionState: () => void;
+	renderCurrentSessionState: (preservePresentationState: boolean) => void;
 	bindCurrentSessionExtensions: () => Promise<void>;
 	subscribeToAgent: () => void;
 	updateAvailableProviderCount: () => Promise<void>;
@@ -36,9 +40,18 @@ describe("overlapping startup and replacement session rebinds", () => {
 		const subscribeToAgent = vi.fn();
 		const updateTerminalTitle = vi.fn();
 		let bindCount = 0;
+		const sessionIds = new Map<object, string>([
+			[startupSession, "startup"],
+			[replacementSession, "replacement"],
+		]);
 
 		const context: RebindContext = {
 			session: startupSession,
+			transcriptExpansionStateSessionId: "startup",
+			getTranscriptSessionId() {
+				return sessionIds.get(this.session) ?? "unknown";
+			},
+			renderer: {},
 			applyRuntimeSettings: () => {},
 			renderCurrentSessionState: () => {},
 			bindCurrentSessionExtensions: () => {

@@ -41,7 +41,24 @@ import { keyHint } from "./keybinding-hints.ts";
 
 const FALLBACK_PREVIEW_LINES = 10;
 
-type ToolExpansionState = "collapsed" | "preview" | "expanded";
+export type ToolExpansionState = "collapsed" | "preview" | "expanded";
+
+export interface ToolExecutionResultSnapshot {
+	readonly content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+	readonly isError: boolean;
+	readonly details?: unknown;
+}
+
+export interface ToolExecutionSnapshot {
+	readonly toolName: string;
+	readonly toolCallId: string;
+	readonly args: unknown;
+	readonly expansionState: ToolExpansionState;
+	readonly executionStarted: boolean;
+	readonly argsComplete: boolean;
+	readonly isPartial: boolean;
+	readonly result?: ToolExecutionResultSnapshot;
+}
 
 function limitPreviewLines(
 	lines: string[],
@@ -135,7 +152,7 @@ export class ToolExecutionComponent extends Container {
 	private result?: {
 		content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 		isError: boolean;
-		details?: any;
+		details?: unknown;
 	};
 	private convertedImages: Map<
 		number,
@@ -346,6 +363,53 @@ export class ToolExecutionComponent extends Container {
 	setExpanded(expanded: boolean): void {
 		this.expansionState = expanded ? "expanded" : "collapsed";
 		this.updateDisplay();
+	}
+
+	getExpansionState(): ToolExpansionState {
+		return this.expansionState;
+	}
+
+	setExpansionState(state: ToolExpansionState): void {
+		this.expansionState = state;
+		this.updateDisplay();
+	}
+
+	getSnapshot(): ToolExecutionSnapshot {
+		return {
+			toolName: this.toolName,
+			toolCallId: this.toolCallId,
+			args: this.args,
+			expansionState: this.expansionState,
+			executionStarted: this.executionStarted,
+			argsComplete: this.argsComplete,
+			isPartial: this.isPartial,
+			...(this.result
+				? {
+						result: {
+							content: this.result.content.map((content) => ({ ...content })),
+							isError: this.result.isError,
+							...(this.result.details === undefined ? {} : { details: this.result.details }),
+						},
+					}
+				: {}),
+		};
+	}
+
+	restoreSnapshot(snapshot: ToolExecutionSnapshot): void {
+		this.args = snapshot.args;
+		this.expansionState = snapshot.expansionState;
+		this.executionStarted = snapshot.executionStarted;
+		this.argsComplete = snapshot.argsComplete;
+		this.isPartial = snapshot.isPartial;
+		this.result = snapshot.result
+			? {
+					content: snapshot.result.content.map((content) => ({ ...content })),
+					isError: snapshot.result.isError,
+					...(snapshot.result.details === undefined ? {} : { details: snapshot.result.details }),
+				}
+			: undefined;
+		this.updateDisplay();
+		this.maybeConvertImagesForKitty();
 	}
 
 	setShowImages(show: boolean): void {

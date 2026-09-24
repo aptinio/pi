@@ -35,9 +35,12 @@ import {
 	Container,
 	CURSOR_MARKER,
 	compositeTuiLine,
+	decodeTranscriptEntryMarkerPrefix,
 	dispatchMouseEvent,
 	type OverlayHandle,
 	retargetMouseEvent,
+	stripTranscriptEntryMarkers,
+	type TranscriptViewState,
 	TuiBase,
 	type TuiMouseButton,
 	type TuiMouseDispatchResult,
@@ -70,6 +73,7 @@ const FOCUS_OUT = "\x1b[O";
 const BEGIN_SYNCHRONIZED_OUTPUT = "\x1b[?2026h";
 const END_SYNCHRONIZED_OUTPUT = "\x1b[?2026l";
 const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;
+const TRANSCRIPT_ENTRY_MARKER_PREFIX = "\x1b_pi:e:";
 const PAGE_SCROLL_OVERLAP = 4;
 const ALT_WHEEL_SCROLL_MULTIPLIER = 5;
 const MAX_CACHED_OFFSCREEN_KITTY_IMAGES = 16;
@@ -170,6 +174,13 @@ interface SemanticPromptRange {
 interface SemanticPromptZone {
 	startRow: number;
 	ranges: SemanticPromptRange[];
+	entryId?: string;
+}
+
+interface TranscriptEntryRange {
+	entryId: string;
+	startRow: number;
+	endRow: number;
 }
 
 export interface PromptSelectionStyleContext {
@@ -245,6 +256,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private scrollToEndIndicatorRect?: ScrollToEndIndicatorRect;
 	private activeSearch?: ActiveSearch;
 	private selectedPromptOrdinal?: number;
+	private transcriptSessionId = "";
+	private transcriptEntryMarkerCache = new Map<string, string>();
+	private pendingTranscriptViewState?: TranscriptViewState;
 	private pressedUrl?: string;
 	private selectionDragged = false;
 	private mouseCapture?: TuiMouseDispatchTarget;
@@ -341,6 +355,97 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.requestRender();
 	}
 
+	hasBlockingOverlayEntries(): boolean {
+		return this.hasOverlayEntries && !(this.activeSearch && this.overlayEntryCount === 1);
+	}
+
+	setTranscriptSessionId(sessionId: string): void {
+		if (sessionId === this.transcriptSessionId) return;
+		this.transcriptSessionId = sessionId;
+		this.transcriptEntryMarkerCache.clear();
+		this.clearTranscriptViewState({ followEnd: true });
+	}
+
+	captureTranscriptViewState(): TranscriptViewState {
+		const scrollView = this.getPrimaryScrollView();
+		const lines = this.currentLayout
+			? getScrollViewBox(this.currentLayout, scrollView)?.scrollContentLines
+			: undefined;
+		const entryRanges = lines ? this.getTranscriptEntryRanges(lines) : [];
+		const selectedEntryId =
+			lines && this.selectedPromptOrdinal !== undefined
+				? this.getSemanticPromptZones(lines)[this.selectedPromptOrdinal]?.entryId
+				: undefined;
+		let viewportAnchor: TranscriptViewState["viewportAnchor"];
+		for (const range of entryRanges) {
+			if (range.startRow > scrollView.scrollTop) break;
+			viewportAnchor = {
+				entryId: range.entryId,
+				rowOffset: Math.min(scrollView.scrollTop - range.startRow, range.endRow - range.startRow),
+			};
+		}
+		if (!viewportAnchor && entryRanges[0]) {
+			viewportAnchor = {
+				entryId: entryRanges[0].entryId,
+				rowOffset: scrollView.scrollTop - entryRanges[0].startRow,
+			};
+		}
+
+		let search: TranscriptViewState["search"];
+		if (this.activeSearch) {
+			const selected = this.activeSearch.matches[this.activeSearch.selectedIndex];
+			const selectedRow = selected?.segments[0]?.row;
+			const selectedRange =
+				selectedRow === undefined ? undefined : this.getTranscriptEntryRangeAtRow(entryRanges, selectedRow);
+			let current: { entryId: string; occurrence: number } | undefined;
+			if (selectedRange && selected) {
+				let occurrence = 0;
+				for (let index = 0; index < this.activeSearch.selectedIndex; index++) {
+					const row = this.activeSearch.matches[index]?.segments[0]?.row;
+					if (
+						row !== undefined &&
+						this.getTranscriptEntryRangeAtRow(entryRanges, row)?.entryId === selectedRange.entryId
+					) {
+						occurrence += 1;
+					}
+				}
+				current = { entryId: selectedRange.entryId, occurrence };
+			}
+			search = { query: this.activeSearch.query, ...(current ? { current } : {}) };
+		}
+
+		return {
+			sessionId: this.transcriptSessionId,
+			...(selectedEntryId ? { selectedEntryId } : {}),
+			...(viewportAnchor ? { viewportAnchor } : {}),
+			followingEnd: scrollView.isFollowingEnd,
+			followSuppressed: scrollView.isFollowSuppressed,
+			...(search ? { search } : {}),
+		};
+	}
+
+	restoreTranscriptViewState(state: TranscriptViewState): void {
+		this.transcriptEntryMarkerCache.clear();
+		this.clearTextSelection();
+		if (state.sessionId !== this.transcriptSessionId) {
+			this.clearTranscriptViewState({ followEnd: true });
+			return;
+		}
+		this.pendingTranscriptViewState = state;
+		this.requestRender();
+	}
+
+	clearTranscriptViewState(options: { followEnd?: boolean } = {}): void {
+		this.pendingTranscriptViewState = undefined;
+		this.clearTextSelection();
+		this.selectedPromptOrdinal = undefined;
+		this.closeSearch();
+		const scrollView = this.getPrimaryScrollView();
+		if (options.followEnd) scrollView.scrollToEnd();
+		else scrollView.clearFollowSuppression();
+		this.requestRender();
+	}
+
 	override render(width: number): string[] {
 		return this.layoutRoot?.render(width) ?? super.render(width);
 	}
@@ -419,7 +524,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.terminal.write(`${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`);
 		} else {
 			const width = Math.max(1, this.terminal.columns);
-			const documentLines = this.render(width).map((line) => line.replace(OSC133_ZONE_PREFIX, ""));
+			const documentLines = this.render(width).map((line) =>
+				stripTranscriptEntryMarkers(line.replace(OSC133_ZONE_PREFIX, "")),
+			);
 			this.lastDocument = this.applyLineResets(documentLines.map((line) => line.replaceAll(CURSOR_MARKER, ""))).map(
 				(line) => (isImageLine(line) || visibleWidth(line) <= width ? line : sliceByColumn(line, 0, width, true)),
 			);
@@ -560,18 +667,68 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.requestRender();
 	}
 
+	private getTranscriptEntryMarker(
+		line: string,
+		oscPrefix = OSC133_ZONE_PREFIX.exec(line)?.[0] ?? "",
+	): { entryId: string } | undefined {
+		const suffix = line.slice(oscPrefix.length);
+		if (!suffix.startsWith(TRANSCRIPT_ENTRY_MARKER_PREFIX)) return undefined;
+		const end = suffix.indexOf("\x07", TRANSCRIPT_ENTRY_MARKER_PREFIX.length);
+		if (end < 0) return undefined;
+		const marker = suffix.slice(0, end + 1);
+		const cached = this.transcriptEntryMarkerCache.get(marker);
+		if (cached !== undefined) return { entryId: cached };
+		const decoded = decodeTranscriptEntryMarkerPrefix(marker);
+		if (!decoded) return undefined;
+		this.transcriptEntryMarkerCache.set(marker, decoded.entryId);
+		return { entryId: decoded.entryId };
+	}
+
+	private getTranscriptEntryRanges(lines: readonly string[]): TranscriptEntryRange[] {
+		const ranges: TranscriptEntryRange[] = [];
+		for (let row = 0; row < lines.length; row++) {
+			const marker = this.getTranscriptEntryMarker(lines[row] ?? "");
+			if (!marker) continue;
+			const previous = ranges[ranges.length - 1];
+			if (previous) previous.endRow = Math.max(previous.startRow, row - 1);
+			ranges.push({ entryId: marker.entryId, startRow: row, endRow: lines.length - 1 });
+		}
+		return ranges;
+	}
+
+	private getTranscriptEntryRangeAtRow(
+		ranges: readonly TranscriptEntryRange[],
+		row: number,
+	): TranscriptEntryRange | undefined {
+		let low = 0;
+		let high = ranges.length - 1;
+		while (low <= high) {
+			const middle = Math.floor((low + high) / 2);
+			const range = ranges[middle]!;
+			if (row < range.startRow) high = middle - 1;
+			else if (row > range.endRow) low = middle + 1;
+			else return range;
+		}
+		return undefined;
+	}
+
 	private getSemanticPromptZones(lines: readonly string[]): SemanticPromptZone[] {
 		const zones: SemanticPromptZone[] = [];
 		let ranges: SemanticPromptRange[] = [];
 		let rangeStart: number | undefined;
+		let currentEntryId: string | undefined;
+		let zoneEntryId: string | undefined;
 		const finishZone = () => {
 			if (ranges.length === 0) return;
-			zones.push({ startRow: ranges[0]!.startRow, ranges });
+			zones.push({ startRow: ranges[0]!.startRow, ranges, ...(zoneEntryId ? { entryId: zoneEntryId } : {}) });
 			ranges = [];
+			zoneEntryId = undefined;
 		};
 
 		for (let row = 0; row < lines.length; row++) {
-			const prefix = OSC133_ZONE_PREFIX.exec(lines[row] ?? "")?.[0];
+			const line = lines[row] ?? "";
+			const prefix = OSC133_ZONE_PREFIX.exec(line)?.[0] ?? "";
+			currentEntryId = this.getTranscriptEntryMarker(line, prefix)?.entryId ?? currentEntryId;
 			if (!prefix) continue;
 			let markers = Array.from(prefix.matchAll(/\x1b\]133;([ABC])(?:\x07|\x1b\\)/g), (match) => match[1]);
 			// Legacy single-line components can prepend B+C after A, yielding B+C+A in the final prefix.
@@ -586,6 +743,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			// B closes one selectable range; C closes the logical message after any excluded gaps.
 			for (const marker of markers) {
 				if (marker === "A") {
+					if (ranges.length === 0 && rangeStart === undefined) zoneEntryId = currentEntryId;
 					if (rangeStart !== undefined) {
 						ranges.push({ startRow: rangeStart, endRow: Math.max(rangeStart, row - 1) });
 						finishZone();
@@ -612,24 +770,20 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return zones;
 	}
 
-	private toggleSearch(): void {
-		if (this.activeSearch) {
-			this.closeSearch();
-			return;
-		}
-		this.clearPromptSelection();
+	private openSearch(query = "", selectionMode: SearchSelectionMode = "query"): ActiveSearch {
 		const component = new AltScreenSearchComponent(
-			(query) => this.updateSearchQuery(query),
+			(nextQuery) => this.updateSearchQuery(nextQuery),
 			this.searchNavigationButtonStyle,
 		);
+		component.setQuery(query);
 		const search: ActiveSearch = {
 			component,
 			index: new AltScreenSearchIndex(),
-			query: "",
+			query,
 			matches: [],
 			selectedIndex: -1,
 			anchorRow: this.getPrimaryScrollView().scrollTop,
-			selectionMode: "query",
+			selectionMode,
 		};
 		this.activeSearch = search;
 		search.overlay = this.showOverlay(component, {
@@ -638,6 +792,16 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			minWidth: 32,
 			margin: 1,
 		});
+		return search;
+	}
+
+	private toggleSearch(): void {
+		if (this.activeSearch) {
+			this.closeSearch();
+			return;
+		}
+		this.clearPromptSelection();
+		this.openSearch();
 	}
 
 	private closeSearch(): void {
@@ -687,6 +851,82 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 		this.navigateSearch(direction);
 		return true;
+	}
+
+	private applyTranscriptViewState(state: TranscriptViewState, layout: LayoutFrame): boolean {
+		const scrollView = layout.primaryScrollView ?? this.implicitScrollView;
+		const lines = getScrollViewBox(layout, scrollView)?.scrollContentLines ?? [];
+		const entryRanges = this.getTranscriptEntryRanges(lines);
+		const previousScrollTop = scrollView.scrollTop;
+
+		const zones = this.getSemanticPromptZones(lines);
+		this.selectedPromptOrdinal = state.selectedEntryId
+			? zones.findIndex((zone) => zone.entryId === state.selectedEntryId)
+			: undefined;
+		if (this.selectedPromptOrdinal === -1) this.selectedPromptOrdinal = undefined;
+
+		if (state.search) {
+			if (!this.activeSearch) {
+				this.openSearch(state.search.query, "retain");
+			} else {
+				this.activeSearch.component.setQuery(state.search.query);
+				this.activeSearch.query = state.search.query;
+				this.activeSearch.selectionMode = "retain";
+			}
+		} else {
+			this.closeSearch();
+		}
+
+		if (state.followingEnd) {
+			scrollView.scrollToEnd();
+		} else {
+			const anchor = state.viewportAnchor
+				? entryRanges.find((range) => range.entryId === state.viewportAnchor?.entryId)
+				: undefined;
+			if (anchor && state.viewportAnchor) {
+				const rowOffset = Math.max(
+					-anchor.startRow,
+					Math.min(state.viewportAnchor.rowOffset, anchor.endRow - anchor.startRow),
+				);
+				scrollView.scrollTo(anchor.startRow + rowOffset, { disableFollow: state.followSuppressed });
+			} else {
+				scrollView.scrollToEnd();
+				if (state.followSuppressed) {
+					scrollView.scrollTo(scrollView.scrollTop, { disableFollow: true });
+				}
+			}
+			if (!state.followSuppressed) scrollView.preserveViewport();
+		}
+		return scrollView.scrollTop !== previousScrollTop;
+	}
+
+	private restoreSearchCurrent(
+		layout: LayoutFrame,
+		current: NonNullable<NonNullable<TranscriptViewState["search"]>["current"]>,
+	): void {
+		const search = this.activeSearch;
+		if (!search) return;
+		const scrollView = layout.primaryScrollView ?? this.implicitScrollView;
+		const lines = getScrollViewBox(layout, scrollView)?.scrollContentLines ?? [];
+		const entryRanges = this.getTranscriptEntryRanges(lines);
+		let occurrence = 0;
+		let selectedIndex = -1;
+		for (let index = 0; index < search.matches.length; index++) {
+			const row = search.matches[index]?.segments[0]?.row;
+			if (row === undefined || this.getTranscriptEntryRangeAtRow(entryRanges, row)?.entryId !== current.entryId) {
+				continue;
+			}
+			if (occurrence === current.occurrence) {
+				selectedIndex = index;
+				break;
+			}
+			occurrence += 1;
+		}
+		if (selectedIndex < 0) return;
+		search.selectedIndex = selectedIndex;
+		search.selectedKey = getAltScreenSearchMatchKey(search.matches[selectedIndex]!);
+		search.selectionMode = "retain";
+		search.component.setResult(selectedIndex, search.matches.length);
 	}
 
 	private refreshSearch(layout: LayoutFrame): boolean {
@@ -1883,10 +2123,18 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const height = Math.max(1, this.terminal.rows);
 		const root = this.layoutRoot ?? this.implicitScrollView;
 		let nextLayout = renderLayoutFrame(root, width, height, () => this.requestRender());
+		const pendingViewState = this.pendingTranscriptViewState;
+		this.pendingTranscriptViewState = undefined;
+		if (pendingViewState && this.applyTranscriptViewState(pendingViewState, nextLayout)) {
+			nextLayout = renderLayoutFrame(root, width, height, () => this.requestRender());
+		}
 		if (this.refreshSearch(nextLayout)) {
 			nextLayout = renderLayoutFrame(root, width, height, () => this.requestRender());
 		}
-		let screen = nextLayout.lines.map((line) => line.replace(OSC133_ZONE_PREFIX, ""));
+		if (pendingViewState?.search?.current) {
+			this.restoreSearchCurrent(nextLayout, pendingViewState.search.current);
+		}
+		let screen = nextLayout.lines.map((line) => stripTranscriptEntryMarkers(line.replace(OSC133_ZONE_PREFIX, "")));
 		screen = this.applyPromptSelection(screen, nextLayout);
 		screen = this.applySearchHighlights(screen, nextLayout);
 		screen = this.compositeScrollToEndIndicator(screen, nextLayout, width);

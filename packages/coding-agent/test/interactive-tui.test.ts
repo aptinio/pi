@@ -225,6 +225,9 @@ describe("createInteractiveTui", () => {
 			options: { tuiMode?: TuiMode };
 			themeController: { rebindTui: () => void };
 			extensionTerminalInputSubscriptions: Set<never>;
+			getTranscriptSessionId: () => string;
+			mountInteractiveTui: (tui: ReturnType<typeof createInteractiveTui>, components: readonly Component[]) => void;
+			rebuildTranscript: () => void;
 		};
 		const context = Object.assign(Object.create(InteractiveMode.prototype), {
 			runtimeHost: { session: { settingsManager: { getFullscreenCopyOnSelect: () => true } } },
@@ -234,6 +237,12 @@ describe("createInteractiveTui", () => {
 			options: { tuiMode: "regular" as TuiMode },
 			themeController: { rebindTui: () => {} },
 			extensionTerminalInputSubscriptions: new Set<never>(),
+			getTranscriptSessionId: () => "session-reader-test",
+			mountInteractiveTui: (tui: ReturnType<typeof createInteractiveTui>, components: readonly Component[]) => {
+				for (const child of components) tui.addChild(child);
+				if (isViewportTUI(tui)) tui.setLayoutRoot(component);
+			},
+			rebuildTranscript: vi.fn(),
 		}) as SwitchContext;
 		stableUi = createInteractiveTuiReference(() => context.renderer);
 		context.ui = stableUi;
