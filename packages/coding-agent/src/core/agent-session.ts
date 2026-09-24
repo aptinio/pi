@@ -228,6 +228,7 @@ export type AgentSessionEvent =
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
 			result: CompactionResult | undefined;
+			entryId?: string;
 			aborted: boolean;
 			willRetry: boolean;
 			errorMessage?: string;
@@ -252,6 +253,14 @@ export type AgentSessionEvent =
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
+
+export interface PersistedEntryIdentity {
+	readonly entryId: string;
+	readonly entry: SessionEntry;
+	readonly sourceMessage?: AgentMessage;
+}
+
+export type PersistedEntryListener = (identity: PersistedEntryIdentity) => void;
 
 // ============================================================================
 // Types
@@ -416,6 +425,7 @@ export class AgentSession {
 	// Event subscription state
 	private _unsubscribeAgent?: () => void;
 	private _eventListeners: AgentSessionEventListener[] = [];
+	private _persistedEntryListeners: PersistedEntryListener[] = [];
 	private _isAgentRunActive = false;
 	private _promptPreflightCount = 0;
 	private _agentRunAbortRequested = false;
@@ -526,7 +536,10 @@ export class AgentSession {
 		this._modelRuntime = config.modelRuntime;
 		this._cacheWarmer = config.cacheWarmer;
 		if (this._cacheWarmer) {
-			this._cacheWarmer.onWarmed = (entry) => this._emit({ type: "entry_appended", entry });
+			this._cacheWarmer.onWarmed = (entry) => {
+				this._notifyPersistedEntry(entry.id);
+				this._emit({ type: "entry_appended", entry });
+			};
 		}
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
@@ -1085,7 +1098,10 @@ export class AgentSession {
 	private _commitBoundaryDrafts(drafts: SessionBoundaryDraft[]): void {
 		const appended = this._applyBoundaryDrafts(this.sessionManager, drafts);
 		this._refreshFinalizedContext();
-		for (const entry of appended) this._emit({ type: "entry_appended", entry });
+		for (const entry of appended) {
+			this._notifyPersistedEntry(entry.id);
+			this._emit({ type: "entry_appended", entry });
+		}
 	}
 
 	private _reportInvalidBoundaryContinuation(event: "turn_end" | "agent_before_settle"): void {
@@ -1094,6 +1110,17 @@ export class AgentSession {
 			event,
 			error: `${event} requested continuation without runnable model context`,
 		});
+	}
+
+	private _notifyPersistedEntry(entryId: string, sourceMessage?: AgentMessage): void {
+		const entry = this.sessionManager.getEntry(entryId);
+		if (!entry) return;
+		const identity: PersistedEntryIdentity = {
+			entryId,
+			entry,
+			...(sourceMessage ? { sourceMessage } : {}),
+		};
+		for (const listener of this._persistedEntryListeners) listener(identity);
 	}
 
 	/** Emit an event to all listeners */
@@ -1229,7 +1256,10 @@ export class AgentSession {
 				// Regular LLM message - persist as SessionMessageEntry
 				entryId = this.sessionManager.appendMessage(event.message);
 			}
-			if (entryId) this._entryIdsByMessage.set(event.message, entryId);
+			if (entryId) {
+				this._entryIdsByMessage.set(event.message, entryId);
+				this._notifyPersistedEntry(entryId, event.message);
+			}
 			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
 
 			if (event.message.role === "assistant") {
@@ -1462,6 +1492,15 @@ export class AgentSession {
 		};
 	}
 
+	/** Subscribe to exact post-persistence identities without widening public session events. */
+	subscribePersistedEntries(listener: PersistedEntryListener): () => void {
+		this._persistedEntryListeners.push(listener);
+		return () => {
+			const index = this._persistedEntryListeners.indexOf(listener);
+			if (index !== -1) this._persistedEntryListeners.splice(index, 1);
+		};
+	}
+
 	/** Disconnect from agent events during disposal. */
 	private _disconnectFromAgent(): void {
 		if (this._unsubscribeAgent) {
@@ -1490,6 +1529,7 @@ export class AgentSession {
 		);
 		this._disconnectFromAgent();
 		this._eventListeners = [];
+		this._persistedEntryListeners = [];
 		if (this._cacheWarmer) {
 			this._cacheWarmer.onWarmed = undefined;
 			this._cacheWarmer.cancel();
@@ -2496,12 +2536,13 @@ export class AgentSession {
 	}
 
 	private _appendCustomMessage(appMessage: CustomMessage): void {
-		this.sessionManager.appendCustomMessageEntry(
+		const entryId = this.sessionManager.appendCustomMessageEntry(
 			appMessage.customType,
 			appMessage.content,
 			appMessage.display,
 			appMessage.details,
 		);
+		this._notifyPersistedEntry(entryId, appMessage);
 		this._refreshFinalizedContext();
 		this._emit({ type: "message_start", message: appMessage });
 		this._emit({ type: "message_end", message: appMessage });
@@ -3003,15 +3044,19 @@ export class AgentSession {
 				throw new Error("Compaction cancelled");
 			}
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
-			const newEntries = this.sessionManager.getEntries();
+			const compactionEntryId = this.sessionManager.appendCompaction(
+				summary,
+				firstKeptEntryId,
+				tokensBefore,
+				details,
+				fromExtension,
+				usage,
+			);
+			this._notifyPersistedEntry(compactionEntryId);
 			this._refreshFinalizedContext();
 			const estimatedTokensAfter = estimateMessagesTokens(this.sessionManager.buildSessionProjection().messages);
 
-			// Get the saved compaction entry for the extension event
-			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
-				| CompactionEntry
-				| undefined;
+			const savedCompactionEntry = this.sessionManager.getEntry(compactionEntryId) as CompactionEntry | undefined;
 
 			if (this._extensionRunner && savedCompactionEntry) {
 				await this._extensionRunner.emit({
@@ -3037,6 +3082,7 @@ export class AgentSession {
 				type: "compaction_end",
 				reason: "manual",
 				result: compactionResult,
+				entryId: compactionEntryId,
 				aborted: false,
 				willRetry: false,
 			});
@@ -3329,15 +3375,19 @@ export class AgentSession {
 			}
 			abortController.signal.throwIfAborted();
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
-			const newEntries = this.sessionManager.getEntries();
+			const compactionEntryId = this.sessionManager.appendCompaction(
+				summary,
+				firstKeptEntryId,
+				tokensBefore,
+				details,
+				fromExtension,
+				usage,
+			);
+			this._notifyPersistedEntry(compactionEntryId);
 			this._refreshFinalizedContext();
 			const estimatedTokensAfter = estimateMessagesTokens(this.sessionManager.buildSessionProjection().messages);
 
-			// Get the saved compaction entry for the extension event
-			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
-				| CompactionEntry
-				| undefined;
+			const savedCompactionEntry = this.sessionManager.getEntry(compactionEntryId) as CompactionEntry | undefined;
 
 			if (this._extensionRunner && savedCompactionEntry) {
 				await this._extensionRunner.emit({
@@ -3357,7 +3407,7 @@ export class AgentSession {
 				usage,
 				details,
 			};
-			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
+			this._emit({ type: "compaction_end", reason, result, entryId: compactionEntryId, aborted: false, willRetry });
 
 			if (willRetry) return true;
 
@@ -3560,6 +3610,7 @@ export class AgentSession {
 				},
 				appendEntry: (customType, data) => {
 					const entryId = this.sessionManager.appendCustomEntry(customType, data);
+					this._notifyPersistedEntry(entryId);
 					const entry = this.sessionManager.getEntry(entryId);
 					if (entry) {
 						this._emit({ type: "entry_appended", entry });
@@ -4056,7 +4107,8 @@ export class AgentSession {
 			// Queue for later - will be flushed on agent_end
 			this._pendingBashMessages.push(bashMessage);
 		} else {
-			this.sessionManager.appendMessage(bashMessage);
+			const entryId = this.sessionManager.appendMessage(bashMessage);
+			this._notifyPersistedEntry(entryId, bashMessage);
 			this._refreshFinalizedContext();
 		}
 	}
@@ -4088,7 +4140,8 @@ export class AgentSession {
 		if (this._pendingBashMessages.length === 0) return;
 
 		for (const bashMessage of this._pendingBashMessages) {
-			this.sessionManager.appendMessage(bashMessage);
+			const entryId = this.sessionManager.appendMessage(bashMessage);
+			this._notifyPersistedEntry(entryId, bashMessage);
 		}
 		this._pendingBashMessages = [];
 		this._refreshFinalizedContext();

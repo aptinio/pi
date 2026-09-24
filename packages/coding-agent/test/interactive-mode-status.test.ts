@@ -9,6 +9,7 @@ import type { AutocompleteProviderFactory } from "../src/core/extensions/types.t
 import type { QuietStartup } from "../src/core/settings-manager.ts";
 import type { SourceInfo } from "../src/core/source-info.ts";
 import type { AuthSelectorProvider } from "../src/modes/interactive/components/oauth-selector.ts";
+import { TranscriptEntryComponent } from "../src/modes/interactive/components/transcript-entry.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
@@ -172,15 +173,21 @@ describe("InteractiveMode.setToolsExpanded", () => {
 // Regression tests for https://github.com/earendil-works/pi/issues/11875
 describe("InteractiveMode pending user bash output", () => {
 	function createPendingBashComponent() {
-		return { render: () => [], invalidate: () => {}, setExpanded: vi.fn() };
+		const component = { render: () => [], invalidate: () => {}, setExpanded: vi.fn() };
+		return { component, entry: new TranscriptEntryComponent(undefined, [component]) };
 	}
 
-	function createContext(pendingBashComponents: ReturnType<typeof createPendingBashComponent>[]) {
+	function createContext(pendingBashComponents: TranscriptEntryComponent[]) {
 		const pendingMessagesContainer = new Container();
 		for (const component of pendingBashComponents) pendingMessagesContainer.addChild(component);
 		const fakeThis: any = {
 			isInitialized: true,
 			toolOutputExpanded: false,
+			transcriptExpansionState: { tools: new Map(), thinking: new Map(), expandable: new Map() },
+			expandableTranscriptComponents: new Map(),
+			toolComponents: new Map(),
+			liveTools: new Map(),
+			pendingBashEntryComponents: [...pendingBashComponents],
 			loadedResourcesContainer: new Container(),
 			chatContainer: new Container(),
 			pendingMessagesContainer,
@@ -211,8 +218,8 @@ describe("InteractiveMode pending user bash output", () => {
 	});
 
 	test("ctrl+o expands user bash output in the pending area", () => {
-		const component = createPendingBashComponent();
-		const fakeThis = createContext([component]);
+		const { component, entry } = createPendingBashComponent();
+		const fakeThis = createContext([entry]);
 
 		fakeThis.setToolsExpanded(true);
 
@@ -220,25 +227,25 @@ describe("InteractiveMode pending user bash output", () => {
 	});
 
 	test("queued message updates keep user bash output in the pending area", () => {
-		const component = createPendingBashComponent();
-		const fakeThis = createContext([component]);
+		const { component, entry } = createPendingBashComponent();
+		const fakeThis = createContext([entry]);
 
 		fakeThis.updatePendingMessagesDisplay();
 		fakeThis.setToolsExpanded(true);
 
-		expect(fakeThis.pendingMessagesContainer.children).toContain(component);
+		expect(fakeThis.pendingMessagesContainer.children).toContain(entry);
 		expect(renderAll(fakeThis.pendingMessagesContainer)).toContain("Steering: steer");
 		expect(component.setExpanded).toHaveBeenCalledWith(true);
 	});
 
 	test("settling the agent run moves user bash output to the chat", async () => {
-		const component = createPendingBashComponent();
-		const fakeThis = createContext([component]);
+		const { entry } = createPendingBashComponent();
+		const fakeThis = createContext([entry]);
 
 		await fakeThis.handleEvent({ type: "agent_settled", aborted: false });
 
-		expect(fakeThis.pendingMessagesContainer.children).not.toContain(component);
-		expect(fakeThis.chatContainer.children).toEqual([component]);
+		expect(fakeThis.pendingMessagesContainer.children).not.toContain(entry);
+		expect(fakeThis.chatContainer.children).toEqual([entry]);
 		expect(fakeThis.pendingBashComponents).toEqual([]);
 	});
 });

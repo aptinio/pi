@@ -14,7 +14,7 @@ import {
 	setCapabilities,
 	setCellDimensions,
 } from "../src/terminal-image.ts";
-import { type Component, CURSOR_MARKER, renderFakeCursor, type TUI } from "../src/tui.ts";
+import { type Component, CURSOR_MARKER, encodeTranscriptEntryMarker, renderFakeCursor, type TUI } from "../src/tui.ts";
 import { TuiMainScreen } from "../src/tui-main-screen.ts";
 import { sliceByColumn } from "../src/utils.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
@@ -197,6 +197,22 @@ describe("TUI bounded render output", () => {
 		assert.ok(output.includes("a"), "full renders should preserve other visible lines");
 		assert.ok(!output.includes(CURSOR_MARKER), "internal cursor markers must not reach the terminal");
 		assert.ok(output.includes("\x1b[10G"), "the bottom visible marker should determine the cursor column");
+	});
+
+	it("strips transcript identity markers before regular-screen writes", () => {
+		const terminal = new BoundedWriteTerminal();
+		const tui = new TuiMainScreen(terminal);
+		const component = new TestComponent();
+		const marker = encodeTranscriptEntryMarker("entry-1");
+		component.lines = [`\x1b]133;A\x07${marker}visible`];
+		tui.addChild(component);
+
+		tui.renderNow();
+
+		const output = terminal.writes.join("");
+		assert.ok(output.includes("visible"));
+		assert.ok(!output.includes("\x1b]133;"), "regular mode must not emit OSC 133 markers");
+		assert.ok(!output.includes(marker), "internal transcript markers must not reach the terminal");
 	});
 
 	it("splits a large full render without changing its output", () => {

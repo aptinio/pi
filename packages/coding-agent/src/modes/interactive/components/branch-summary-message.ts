@@ -43,6 +43,10 @@ export class BranchSummaryMessageComponent extends Box {
 		this.setPaddingX(outputPad);
 	}
 
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+
 	override invalidate(): void {
 		super.invalidate();
 		this.updateDisplay();
