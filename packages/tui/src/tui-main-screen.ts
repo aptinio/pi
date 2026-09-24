@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { deleteKittyImage, isImageLine } from "./terminal-image.ts";
-import { type TUI, TuiBase, type TuiStopOptions } from "./tui.ts";
+import { stripTranscriptEntryMarkers, type TUI, TuiBase, type TuiStopOptions } from "./tui.ts";
 import { visibleWidth } from "./utils.ts";
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
@@ -262,7 +262,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 
 		// Render all components to get new lines
 		// Resolve fake cursors before compositing so overlays and line slicing see plain SGR codes
-		let newLines = this.resolveFakeCursors(this.render(width));
+		let newLines = this.resolveFakeCursors(this.render(width).map(stripTranscriptEntryMarkers));
 
 		// Composite overlays into the rendered lines (before differential compare)
 		if (this.hasOverlayEntries) {
