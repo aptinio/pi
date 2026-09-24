@@ -45,6 +45,40 @@ describe("ToolExecutionComponent parity", () => {
 		vi.useRealTimers();
 	});
 
+	test("restores transient execution and expansion state without renderer component references", () => {
+		const original = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-snapshot",
+			{ value: 1 },
+			{},
+			undefined,
+			createFakeTui(),
+			process.cwd(),
+		);
+		original.markExecutionStarted();
+		original.setArgsComplete();
+		original.setExpansionState("expanded");
+		original.updateResult(
+			{ content: [{ type: "text", text: "partial output" }], details: { phase: 1 }, isError: false },
+			true,
+		);
+
+		const restored = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-snapshot",
+			{},
+			{},
+			undefined,
+			createFakeTui(),
+			process.cwd(),
+		);
+		restored.restoreSnapshot(original.getSnapshot());
+
+		expect(restored.getSnapshot()).toEqual(original.getSnapshot());
+		expect(restored.getExpansionState()).toBe("expanded");
+		expect(stripAnsi(restored.render(120).join("\n"))).toContain("partial output");
+	});
+
 	// Issue #10292: the component loads the PNG transcoder itself, so this works in any TUI host.
 	// Issue #8577: a replaced partial image must not resurface.
 	test("converts non-PNG tool images once the transcoder loads", async () => {

@@ -141,6 +141,7 @@ The `entry` value uses a persisted [session entry type](session-format.md#entry-
 {
   "type": "compaction_end",
   "reason": "threshold",
+  "entryId": "compaction-entry-id",
   "result": {
     "summary": "Summary of conversation...",
     "firstKeptEntryId": "abc123",
@@ -154,7 +155,7 @@ The `entry` value uses a persisted [session entry type](session-format.md#entry-
 }
 ```
 
-If compaction was aborted, `result` is absent and `aborted` is true. If it failed, `result` is absent, `aborted` is false, and `errorMessage` describes the failure. Successful overflow recovery sets `willRetry` to true before Pi retries the prompt.
+On success, `entryId` identifies the exact persisted compaction entry. If compaction was aborted, `result` and `entryId` are absent and `aborted` is true. If it failed, `result` and `entryId` are absent, `aborted` is false, and `errorMessage` describes the failure. Successful overflow recovery sets `willRetry` to true before Pi retries the prompt.
 
 See [Compaction and Branch Summaries](compaction.md) for result semantics.
 

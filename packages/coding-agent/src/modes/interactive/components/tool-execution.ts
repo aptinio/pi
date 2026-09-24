@@ -22,6 +22,26 @@ import { keyHint } from "./keybinding-hints.ts";
 
 const FALLBACK_PREVIEW_LINES = 10;
 
+export type ToolExpansionState = "collapsed" | "expanded";
+
+export interface ToolExecutionResultSnapshot {
+	readonly content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+	readonly isError: boolean;
+	readonly details?: unknown;
+	readonly durationMs?: number;
+}
+
+export interface ToolExecutionSnapshot {
+	readonly toolName: string;
+	readonly toolCallId: string;
+	readonly args: unknown;
+	readonly expansionState: ToolExpansionState;
+	readonly executionStarted: boolean;
+	readonly argsComplete: boolean;
+	readonly isPartial: boolean;
+	readonly result?: ToolExecutionResultSnapshot;
+}
+
 export interface ToolExecutionOptions {
 	showImages?: boolean;
 	imageWidthCells?: number;
@@ -57,7 +77,7 @@ export class ToolExecutionComponent extends Container {
 	private result?: {
 		content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 		isError: boolean;
-		details?: any;
+		details?: unknown;
 		durationMs?: number;
 	};
 	private hideComponent = false;
@@ -206,6 +226,53 @@ export class ToolExecutionComponent extends Container {
 
 	setOutputPad(outputPad: number): void {
 		this.outputPad = outputPad;
+		this.updateDisplay();
+	}
+
+	getExpansionState(): ToolExpansionState {
+		return this.expanded ? "expanded" : "collapsed";
+	}
+
+	setExpansionState(state: ToolExpansionState): void {
+		this.setExpanded(state === "expanded");
+	}
+
+	getSnapshot(): ToolExecutionSnapshot {
+		return {
+			toolName: this.toolName,
+			toolCallId: this.toolCallId,
+			args: this.args,
+			expansionState: this.getExpansionState(),
+			executionStarted: this.executionStarted,
+			argsComplete: this.argsComplete,
+			isPartial: this.isPartial,
+			...(this.result
+				? {
+						result: {
+							content: this.result.content.map((content) => ({ ...content })),
+							isError: this.result.isError,
+							...(this.result.details === undefined ? {} : { details: this.result.details }),
+							...(this.result.durationMs === undefined ? {} : { durationMs: this.result.durationMs }),
+						},
+					}
+				: {}),
+		};
+	}
+
+	restoreSnapshot(snapshot: ToolExecutionSnapshot): void {
+		this.args = snapshot.args;
+		this.expanded = snapshot.expansionState === "expanded";
+		this.executionStarted = snapshot.executionStarted;
+		this.argsComplete = snapshot.argsComplete;
+		this.isPartial = snapshot.isPartial;
+		this.result = snapshot.result
+			? {
+					content: snapshot.result.content.map((content) => ({ ...content })),
+					isError: snapshot.result.isError,
+					...(snapshot.result.details === undefined ? {} : { details: snapshot.result.details }),
+					...(snapshot.result.durationMs === undefined ? {} : { durationMs: snapshot.result.durationMs }),
+				}
+			: undefined;
 		this.updateDisplay();
 	}
 
