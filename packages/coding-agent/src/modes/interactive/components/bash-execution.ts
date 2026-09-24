@@ -19,8 +19,21 @@ import { truncateToVisualLines } from "./visual-truncate.ts";
 // Preview line limit when not expanded (matches tool execution behavior)
 const PREVIEW_LINES = 20;
 
+export interface BashExecutionSnapshot {
+	readonly command: string;
+	readonly excludeFromContext: boolean;
+	readonly output: string;
+	readonly status: "running" | "complete" | "cancelled" | "error";
+	readonly exitCode?: number;
+	readonly truncationResult?: TruncationResult;
+	readonly fullOutputPath?: string;
+	readonly fullOutputError?: string;
+	readonly expanded: boolean;
+}
+
 export class BashExecutionComponent extends Container {
 	private command: string;
+	private readonly excludeFromContext: boolean;
 	private outputLines: string[] = [];
 	private status: "running" | "complete" | "cancelled" | "error" = "running";
 	private exitCode: number | undefined = undefined;
@@ -37,6 +50,7 @@ export class BashExecutionComponent extends Container {
 	constructor(command: string, ui: TUI, excludeFromContext = false, outputPad = 1) {
 		super();
 		this.command = command;
+		this.excludeFromContext = excludeFromContext;
 		this.colorKey = excludeFromContext ? "dim" : "bashMode";
 		this.outputPad = outputPad;
 		const borderColor = (str: string) => theme.fg(this.colorKey, str);
@@ -74,6 +88,36 @@ export class BashExecutionComponent extends Container {
 
 	setOutputPad(outputPad: number): void {
 		this.outputPad = outputPad;
+		this.updateDisplay();
+	}
+
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+
+	getSnapshot(): BashExecutionSnapshot {
+		return {
+			command: this.command,
+			excludeFromContext: this.excludeFromContext,
+			output: this.getOutput(),
+			status: this.status,
+			...(this.exitCode === undefined ? {} : { exitCode: this.exitCode }),
+			...(this.truncationResult ? { truncationResult: this.truncationResult } : {}),
+			...(this.fullOutputPath ? { fullOutputPath: this.fullOutputPath } : {}),
+			...(this.fullOutputError ? { fullOutputError: this.fullOutputError } : {}),
+			expanded: this.expanded,
+		};
+	}
+
+	restoreSnapshot(snapshot: BashExecutionSnapshot): void {
+		this.outputLines = snapshot.output ? snapshot.output.split("\n") : [];
+		this.status = snapshot.status;
+		this.exitCode = snapshot.exitCode;
+		this.truncationResult = snapshot.truncationResult;
+		this.fullOutputPath = snapshot.fullOutputPath;
+		this.fullOutputError = snapshot.fullOutputError;
+		this.expanded = snapshot.expanded;
+		if (snapshot.status !== "running") this.loader.stop();
 		this.updateDisplay();
 	}
 
