@@ -46,6 +46,10 @@ export class CustomMessageComponent extends Container {
 		}
 	}
 
+	isExpanded(): boolean {
+		return this._expanded;
+	}
+
 	setOutputPad(outputPad: number): void {
 		if (this.outputPad !== outputPad) {
 			this.outputPad = outputPad;

@@ -124,6 +124,15 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
+	getThinkingVisibilityOverrides(): ReadonlyMap<number, boolean> {
+		return new Map(this.thinkingVisibilityOverrides);
+	}
+
+	restoreThinkingVisibilityOverrides(overrides: ReadonlyMap<number, boolean>): void {
+		this.thinkingVisibilityOverrides = new Map(overrides);
+		if (this.lastMessage) this.updateContent(this.lastMessage);
+	}
+
 	override render(width: number): string[] {
 		const lines = super.render(width);
 
@@ -170,7 +179,6 @@ export class AssistantMessageComponent extends Container {
 		};
 
 		// Render content in order
-		let thinkingRunIndex = 0;
 		for (let i = 0; i < message.content.length; i++) {
 			const content = message.content[i];
 			if (content.type === "text" && content.text.trim()) {
@@ -196,6 +204,7 @@ export class AssistantMessageComponent extends Container {
 					),
 				);
 			} else if (content.type === "thinking") {
+				const firstThinkingContentIndex = i;
 				const thinkingBlocks: string[] = [];
 				for (; i < message.content.length; i++) {
 					const thinkingContent = message.content[i];
@@ -213,8 +222,7 @@ export class AssistantMessageComponent extends Container {
 					continue;
 				}
 
-				const runIndex = thinkingRunIndex++;
-				const hidden = this.thinkingVisibilityOverrides.get(runIndex) ?? this.hideThinkingBlock;
+				const hidden = this.thinkingVisibilityOverrides.get(firstThinkingContentIndex) ?? this.hideThinkingBlock;
 				// A hidden run with an empty label renders nothing, including no spacing.
 				if (hidden && !this.hiddenThinkingLabel.trim()) {
 					continue;
@@ -249,7 +257,7 @@ export class AssistantMessageComponent extends Container {
 				addVisibleChild(
 					new MouseRegion(thinkingComponent, (event) => {
 						if (event.type !== "click" || event.button !== "left") return undefined;
-						this.thinkingVisibilityOverrides.set(runIndex, !hidden);
+						this.thinkingVisibilityOverrides.set(firstThinkingContentIndex, !hidden);
 						if (this.lastMessage) this.updateContent(this.lastMessage);
 						return { handled: true, preserveViewport: true };
 					}),

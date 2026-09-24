@@ -171,6 +171,7 @@ export {
 	type OverlayUnfocusOptions,
 	renderFakeCursor,
 	type SizeValue,
+	type TranscriptViewState,
 	type TUI,
 	type TuiInputListener,
 	type TuiInputListenerResult,
