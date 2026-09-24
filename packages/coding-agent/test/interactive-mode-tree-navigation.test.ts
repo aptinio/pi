@@ -46,7 +46,7 @@ function createTreeUI() {
 		// Dispose newly created indicators so a failing regression cannot leak spinner timers.
 		showStatusIndicator: vi.fn((indicator: StatusIndicator) => indicator.dispose()),
 		clearStatusIndicator: vi.fn(),
-		clearTranscriptPromptSelection: vi.fn(),
+		rebuildTranscript: vi.fn(),
 		restoreQueuedMessagesToEditor: vi.fn(),
 		renderInitialMessages: vi.fn(),
 		showStatus: vi.fn(),
@@ -87,6 +87,7 @@ describe("InteractiveMode tree navigation availability", () => {
 		expect(ui.clearStatusIndicator).not.toHaveBeenCalled();
 		expect(ui.defaultEditor.onEscape).toBe(onEscape);
 		expect(ui.session.navigateTree).not.toHaveBeenCalled();
+		expect(ui.rebuildTranscript).not.toHaveBeenCalled();
 		expect(ui.session.abort).not.toHaveBeenCalled();
 		expect(ui.sessionManager.getLeafId()).toBe(originalLeafId);
 	});
@@ -105,7 +106,7 @@ describe("InteractiveMode tree navigation availability", () => {
 			summarize: false,
 			customInstructions: undefined,
 		});
-		expect(ui.clearTranscriptPromptSelection).toHaveBeenCalledTimes(1);
+		expect(ui.rebuildTranscript).toHaveBeenCalledTimes(1);
 		expect(ui.showError).not.toHaveBeenCalled();
 	});
 
@@ -122,7 +123,7 @@ describe("InteractiveMode tree navigation availability", () => {
 
 		expect(ui.session.abort).toHaveBeenCalledOnce();
 		expect(ui.session.navigateTree).toHaveBeenCalledOnce();
-		expect(ui.clearTranscriptPromptSelection).toHaveBeenCalledTimes(1);
+		expect(ui.rebuildTranscript).toHaveBeenCalledTimes(1);
 		expect(ui.showError).not.toHaveBeenCalled();
 	});
 
@@ -143,5 +144,6 @@ describe("InteractiveMode tree navigation availability", () => {
 		expect(ui.clearStatusIndicator).not.toHaveBeenCalled();
 		expect(ui.defaultEditor.onEscape).toBe(onEscape);
 		expect(ui.session.navigateTree).not.toHaveBeenCalled();
+		expect(ui.rebuildTranscript).not.toHaveBeenCalled();
 	});
 });
