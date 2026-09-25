@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { visibleWidth, wrapTextWithAnsi } from "../src/utils.ts";
+import { extractSegments, sliceByColumn, visibleWidth, wrapTextWithAnsi } from "../src/utils.ts";
 
 describe("wrapTextWithAnsi", () => {
 	describe("underline styling", () => {
@@ -192,6 +192,39 @@ describe("wrapTextWithAnsi", () => {
 				assert.strictEqual(wrapped[i].endsWith("\x1b[0m"), false);
 			}
 		});
+	});
+});
+
+describe("column slicing", () => {
+	it("closes underline and OSC 8 styles at an exact slice boundary", () => {
+		const url = "https://example.com";
+		const input = `\x1b]8;;${url}\x1b\\\x1b[4mlink\x1b[24m\x1b]8;;\x1b\\`;
+
+		assert.strictEqual(sliceByColumn(input, 0, 4, true), input);
+	});
+
+	it("closes and reopens BEL-terminated styles at interior slice boundaries", () => {
+		const url = "https://example.com";
+		const open = `\x1b]8;;${url}\x07\x1b[4m`;
+		const close = "\x1b[24m\x1b]8;;\x07";
+		const input = `${open}link${close}`;
+
+		assert.strictEqual(sliceByColumn(input, 0, 2, true), `${open}li${close}`);
+		assert.strictEqual(sliceByColumn(input, 2, 2, true), `${open}nk${close}`);
+	});
+
+	it("does not broadly reset foreground or background styles", () => {
+		const sliced = sliceByColumn("\x1b[31m\x1b[44mtext\x1b[39m\x1b[49m", 0, 2, true);
+
+		assert.strictEqual(sliced, "\x1b[31m\x1b[44mte");
+		assert.ok(!sliced.includes("\x1b[0m"));
+	});
+
+	it("closes styles before overlay segment padding", () => {
+		const url = "https://example.com";
+		const input = `\x1b]8;;${url}\x1b\\\x1b[4mlink\x1b[24m\x1b]8;;\x1b\\`;
+
+		assert.strictEqual(extractSegments(input, 8, 9, 3).before, input);
 	});
 });
 

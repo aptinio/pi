@@ -1207,6 +1207,15 @@ export function truncateToWidth(
 	return finalizeTruncatedResult(result, keptWidth, ellipsis, ellipsisWidth, maxWidth, pad);
 }
 
+const pooledLineBoundaryStyleTracker = new AnsiCodeTracker();
+
+function closeLineBoundaryStyles(text: string): string {
+	if (!text.includes("\x1b")) return text;
+	pooledLineBoundaryStyleTracker.clear();
+	updateTrackerFromText(text, pooledLineBoundaryStyleTracker);
+	return text + pooledLineBoundaryStyleTracker.getLineEndReset();
+}
+
 /**
  * Extract a range of visible columns from a line. Handles ANSI codes and wide chars.
  * @param strict - If true, exclude wide chars at boundary that would extend past the range
@@ -1260,6 +1269,8 @@ export function sliceWithWidth(
 		i = textEnd;
 		if (currentCol >= endCol) break;
 	}
+
+	result = closeLineBoundaryStyles(result);
 	return { text: result, width: resultWidth };
 }
 
@@ -1341,5 +1352,10 @@ export function extractSegments(
 		if (afterLen <= 0 ? currentCol >= beforeEnd : currentCol >= afterEnd) break;
 	}
 
-	return { before, beforeWidth, after, afterWidth };
+	return {
+		before: closeLineBoundaryStyles(before),
+		beforeWidth,
+		after: closeLineBoundaryStyles(after),
+		afterWidth,
+	};
 }
