@@ -144,16 +144,30 @@ describe("InteractiveMode.showManagedToolStatus", () => {
 });
 
 describe("InteractiveMode.setToolsExpanded", () => {
-	test("applies expansion state to the active header and chat entries", () => {
+	test("applies expansion state to the active header and registered transcript entries", () => {
 		const header = { setExpanded: vi.fn() };
 		const loadedResourcesChild = { setExpanded: vi.fn() };
-		const chatChild = { setExpanded: vi.fn() };
+		const expandable = { setExpanded: vi.fn() };
+		const assistantTurn = { setExpanded: vi.fn() };
+		const tool = { setExpanded: vi.fn() };
+		const liveTool = { setExpanded: vi.fn() };
 		const fakeThis: any = {
 			toolOutputExpanded: false,
+			transcriptExpansionState: {
+				tools: new Map([["tool", "collapsed"]]),
+				thinking: new Map(),
+				expandable: new Map([["expandable", false]]),
+				assistantTurns: new Map([["assistant", { completed: true }]]),
+				assistantRegions: new Map([["assistant:thinking:0", false]]),
+			},
 			customHeader: undefined,
 			builtInHeader: header,
 			loadedResourcesContainer: { children: [loadedResourcesChild] },
-			chatContainer: { children: [chatChild] },
+			expandableTranscriptComponents: new Map([["expandable", expandable]]),
+			assistantTurns: new Set([assistantTurn]),
+			toolComponents: new Map([["tool", tool]]),
+			liveTools: new Map([["live", liveTool]]),
+			pendingBashEntryComponents: [],
 			ui: { requestRender: vi.fn() },
 			showStatus: vi.fn(),
 		};
@@ -163,7 +177,10 @@ describe("InteractiveMode.setToolsExpanded", () => {
 		expect(fakeThis.toolOutputExpanded).toBe(true);
 		expect(header.setExpanded).toHaveBeenCalledWith(true);
 		expect(loadedResourcesChild.setExpanded).toHaveBeenCalledWith(true);
-		expect(chatChild.setExpanded).toHaveBeenCalledWith(true);
+		expect(expandable.setExpanded).toHaveBeenCalledWith(true);
+		expect(assistantTurn.setExpanded).toHaveBeenCalledWith(true);
+		expect(tool.setExpanded).toHaveBeenCalledWith(true);
+		expect(liveTool.setExpanded).toHaveBeenCalledWith(true);
 		expect(fakeThis.showStatus).toHaveBeenCalledWith("Tool output: expanded");
 	});
 });
