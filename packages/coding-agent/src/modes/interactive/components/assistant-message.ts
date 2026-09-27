@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
+import type { AssistantFoldAssignment } from "./assistant-fold-region.ts";
 import { createMarkdownTransform } from "./markdown-transform.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
@@ -61,6 +62,7 @@ export class AssistantMessageComponent extends Container {
 	private isStreaming = false;
 	private messageId?: string;
 	private timestamp?: string;
+	private thinkingFoldAssignments = new Map<number, AssistantFoldAssignment>();
 	private thinkingVisibilityOverrides = new Map<number, boolean>();
 	private markdownSlots: MarkdownSlot[] = [];
 
@@ -124,6 +126,24 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
+	setThinkingFoldAssignments(assignments: ReadonlyMap<number, AssistantFoldAssignment>): void {
+		this.thinkingFoldAssignments = new Map(assignments);
+		if (this.lastMessage) this.updateContent(this.lastMessage);
+	}
+
+	refreshFoldState(): void {
+		if (this.lastMessage) this.updateContent(this.lastMessage);
+	}
+
+	rendersWithFoldState(): boolean {
+		const message = this.lastMessage;
+		if (!message) return false;
+		if (this.hasVisibleContent(message)) return true;
+		if (message.stopReason === "length") return true;
+		const hasToolCalls = message.content.some((content) => content.type === "toolCall");
+		return !hasToolCalls && (message.stopReason === "aborted" || message.stopReason === "error");
+	}
+
 	getThinkingVisibilityOverrides(): ReadonlyMap<number, boolean> {
 		return new Map(this.thinkingVisibilityOverrides);
 	}
@@ -144,6 +164,30 @@ export class AssistantMessageComponent extends Container {
 			break;
 		}
 		return lines;
+	}
+
+	private hasVisibleContent(message: AssistantMessage): boolean {
+		for (let index = 0; index < message.content.length; index += 1) {
+			const content = message.content[index];
+			if (content.type === "text" && content.text.trim()) return true;
+			if (content.type !== "thinking") continue;
+
+			const firstThinkingContentIndex = index;
+			let hasThinking = false;
+			for (; index < message.content.length; index += 1) {
+				const thinking = message.content[index];
+				if (thinking.type !== "thinking") break;
+				if (thinking.thinking.trim()) hasThinking = true;
+			}
+			index -= 1;
+			if (!hasThinking) continue;
+			const assignment = this.thinkingFoldAssignments.get(firstThinkingContentIndex);
+			if (assignment?.showSummary) return true;
+			if (assignment && !assignment.region.isExpanded()) continue;
+			const hidden = this.thinkingVisibilityOverrides.get(firstThinkingContentIndex) ?? this.hideThinkingBlock;
+			if (!hidden || this.hiddenThinkingLabel.trim()) return true;
+		}
+		return false;
 	}
 
 	updateContent(message: AssistantMessage, isStreaming = this.isStreaming): void {
@@ -218,9 +262,13 @@ export class AssistantMessageComponent extends Container {
 				}
 				i--;
 
-				if (thinkingBlocks.length === 0) {
-					continue;
+				if (thinkingBlocks.length === 0) continue;
+
+				const foldAssignment = this.thinkingFoldAssignments.get(firstThinkingContentIndex);
+				if (foldAssignment?.showSummary) {
+					addVisibleChild(foldAssignment.region.getSummaryComponent());
 				}
+				if (foldAssignment && !foldAssignment.region.isExpanded()) continue;
 
 				const hidden = this.thinkingVisibilityOverrides.get(firstThinkingContentIndex) ?? this.hideThinkingBlock;
 				// A hidden run with an empty label renders nothing, including no spacing.

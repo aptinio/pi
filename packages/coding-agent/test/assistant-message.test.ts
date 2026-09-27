@@ -1,5 +1,5 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { TuiMouseEvent } from "@earendil-works/pi-tui";
+import { Text, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.ts";
@@ -278,6 +278,54 @@ describe("AssistantMessageComponent", () => {
 			true,
 		);
 		expect(component.render(80).map((line) => stripAnsi(line).trim())).toEqual(["", "Thinking...", "", "answer"]);
+	});
+
+	test("replaces folded thinking with its region summary", () => {
+		initTheme("dark");
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([
+				{ type: "thinking", thinking: "private reasoning" },
+				{ type: "text", text: "visible answer" },
+			]),
+		);
+		let expanded = false;
+		const region = {
+			getSummaryComponent: () => new Text("fold summary", 0, 0),
+			isExpanded: () => expanded,
+		};
+		component.setThinkingFoldAssignments(new Map([[0, { region, showSummary: true }]]));
+
+		const folded = stripAnsi(component.render(80).join("\n"));
+		expect(folded).toContain("fold summary");
+		expect(folded).toContain("visible answer");
+		expect(folded).not.toContain("private reasoning");
+		expect(folded).not.toContain("Thinking...");
+
+		expanded = true;
+		component.refreshFoldState();
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("private reasoning");
+	});
+
+	test("does not report fold state for hidden thinking with an empty label", () => {
+		initTheme("dark");
+		const component = new AssistantMessageComponent(
+			createAssistantMessage(
+				[
+					{ type: "thinking", thinking: "reasoning" },
+					{ type: "toolCall", id: "tool-1", name: "read", arguments: { path: "file.txt" } },
+				],
+				{ stopReason: "toolUse" },
+			),
+			true,
+			undefined,
+			"",
+		);
+
+		expect(component.render(80)).toEqual([]);
+		expect(component.rendersWithFoldState()).toBe(false);
+
+		component.setHiddenThinkingLabel("Thinking...");
+		expect(component.rendersWithFoldState()).toBe(true);
 	});
 
 	test("collapses individual thinking runs when clicked", () => {
