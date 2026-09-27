@@ -1,5 +1,5 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { TuiMouseEvent } from "@earendil-works/pi-tui";
+import { Text, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { describe, expect, test } from "vitest";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.ts";
@@ -204,6 +204,32 @@ describe("AssistantMessageComponent", () => {
 
 		expect(rendered.match(/Thinking\.\.\./g)).toHaveLength(1);
 		expect(rendered).toContain("answer");
+	});
+
+	test("replaces folded thinking with its region summary", () => {
+		initTheme("dark");
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([
+				{ type: "thinking", thinking: "private reasoning" },
+				{ type: "text", text: "visible answer" },
+			]),
+		);
+		let expanded = false;
+		const region = {
+			getSummaryComponent: () => new Text("fold summary", 0, 0),
+			isExpanded: () => expanded,
+		};
+		component.setThinkingFoldAssignments(new Map([[0, { region, showSummary: true }]]));
+
+		const folded = stripAnsi(component.render(80).join("\n"));
+		expect(folded).toContain("fold summary");
+		expect(folded).toContain("visible answer");
+		expect(folded).not.toContain("private reasoning");
+		expect(folded).not.toContain("Thinking...");
+
+		expanded = true;
+		component.refreshFoldState();
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("private reasoning");
 	});
 
 	test("collapses individual thinking runs when clicked", () => {

@@ -148,6 +148,7 @@ import { createChatViewport } from "./chat-viewport.ts";
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { AssistantTranscriptGroup } from "./components/assistant-transcript-group.ts";
+import { AssistantTurn } from "./components/assistant-turn.ts";
 import { BashExecutionComponent, type BashExecutionSnapshot } from "./components/bash-execution.ts";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.ts";
@@ -294,14 +295,32 @@ type CompactionCostNotice = {
 
 type ExpandableTranscriptComponent = Expandable & { isExpanded(): boolean };
 
+type RenderTranscriptOptions = {
+	updateFooter?: boolean;
+	populateHistory?: boolean;
+	collapseCompletedActivity?: boolean;
+};
+
+type AssistantTurnPresentationState = {
+	completed: boolean;
+};
+
 type TranscriptExpansionState = {
 	tools: Map<string, ToolExpansionState>;
 	thinking: Map<string, ReadonlyMap<number, boolean>>;
 	expandable: Map<string, boolean>;
+	assistantTurns: Map<string, AssistantTurnPresentationState>;
+	assistantRegions: Map<string, boolean>;
 };
 
 function createTranscriptExpansionState(): TranscriptExpansionState {
-	return { tools: new Map(), thinking: new Map(), expandable: new Map() };
+	return {
+		tools: new Map(),
+		thinking: new Map(),
+		expandable: new Map(),
+		assistantTurns: new Map(),
+		assistantRegions: new Map(),
+	};
 }
 
 type TransientToolState = {
@@ -531,6 +550,8 @@ export class InteractiveMode {
 	// Streaming message tracking
 	private streamingComponent: AssistantMessageComponent | undefined = undefined;
 	private streamingGroup: AssistantTranscriptGroup | undefined = undefined;
+	private activeAssistantTurn: AssistantTurn | undefined = undefined;
+	private readonly assistantTurns = new Set<AssistantTurn>();
 	private readonly entriesRenderedByBoundaryCompaction = new Set<string>();
 	private streamingMessage: AssistantMessage | undefined = undefined;
 	private readonly persistedEntryIdsByMessage = new WeakMap<object, string>();
@@ -2281,9 +2302,7 @@ export class InteractiveMode {
 	}
 
 	private renderCurrentSessionState(preservePresentationState: boolean): void {
-		const expansionState = preservePresentationState
-			? this.captureTranscriptExpansionState()
-			: this.transcriptExpansionState;
+		const expansionState = preservePresentationState ? this.captureTranscriptExpansionState() : undefined;
 		const transientState = preservePresentationState
 			? this.captureTransientTranscriptState()
 			: { liveTools: new Map<string, TransientToolState>() };
@@ -2301,7 +2320,7 @@ export class InteractiveMode {
 		if (!preservePresentationState) this.liveTools.clear();
 		this.pendingBashEntryComponents = [];
 		this.restoringExpansionState = expansionState;
-		this.renderInitialMessages();
+		this.renderInitialMessages({ collapseCompletedActivity: !preservePresentationState });
 		if (transientState.streamingMessage) {
 			this.addStreamingAssistant(transientState.streamingMessage, transientState.streamingThinking);
 		}
@@ -3629,6 +3648,7 @@ export class InteractiveMode {
 					this.addMessageToChat(event.message);
 					this.ui.requestRender();
 				} else if (event.message.role === "user") {
+					this.activeAssistantTurn = undefined;
 					this.addMessageToChat(event.message);
 					this.updatePendingMessagesDisplay();
 					this.ui.requestRender();
@@ -3761,6 +3781,10 @@ export class InteractiveMode {
 				this.clearStatusIndicator("working");
 				if (this.streamingGroup) {
 					this.chatContainer.removeChild(this.streamingGroup);
+					if (this.activeAssistantTurn?.removeGroup(this.streamingGroup)) {
+						this.assistantTurns.delete(this.activeAssistantTurn);
+						this.activeAssistantTurn = undefined;
+					}
 					this.streamingComponent = undefined;
 					this.streamingGroup = undefined;
 					this.streamingMessage = undefined;
@@ -3772,6 +3796,7 @@ export class InteractiveMode {
 				break;
 
 			case "agent_settled":
+				this.settleAssistantTurns();
 				await this.checkShutdownRequested();
 				break;
 
@@ -3988,6 +4013,95 @@ export class InteractiveMode {
 		if (entryId) this.transcriptEntries.set(entryId, component);
 	}
 
+	private addAssistantGroupToTurn(group: AssistantTranscriptGroup): void {
+		if (!this.activeAssistantTurn) {
+			this.activeAssistantTurn = new AssistantTurn(this.outputPad);
+			this.assistantTurns.add(this.activeAssistantTurn);
+		}
+		this.activeAssistantTurn.addGroup(group);
+		this.chatContainer.addChild(group);
+	}
+
+	private foldActiveAssistantPrefix(): void {
+		const turn = this.activeAssistantTurn;
+		if (!turn) return;
+		turn.reconcileBoundaries(this.chatContainer.children);
+
+		const preserveViewport = this.restoringExpansionState === undefined;
+		let viewState =
+			preserveViewport && TuiLayouts.isViewportTUI(this.renderer)
+				? this.renderer.captureTranscriptViewState()
+				: undefined;
+		const restoredExpansion = this.restoringExpansionState?.assistantRegions;
+		const changed = turn.foldBeforeLast({
+			defaultExpanded: this.toolOutputExpanded,
+			...(restoredExpansion ? { restoredExpansion } : {}),
+		});
+		if (!changed) return;
+
+		if (viewState?.viewportAnchor) {
+			const redirectEntryId = turn.getFoldedEntryRedirect(viewState.viewportAnchor.entryId);
+			if (redirectEntryId) {
+				viewState = {
+					...viewState,
+					viewportAnchor: { entryId: redirectEntryId, rowOffset: 0 },
+				};
+			}
+		}
+		if (viewState && TuiLayouts.isViewportTUI(this.renderer)) {
+			this.renderer.restoreTranscriptViewState(viewState);
+		}
+		this.ui.requestRender();
+	}
+
+	private completeActiveAssistantTurn(options: { collapseCompletedActivity?: boolean } = {}): void {
+		const turn = this.activeAssistantTurn;
+		if (turn) {
+			turn.reconcileBoundaries(this.chatContainer.children);
+			const restoredState = turn
+				.getStateKeys()
+				.map((stateKey) => this.restoringExpansionState?.assistantTurns.get(stateKey))
+				.find((state) => state !== undefined);
+			if (!this.session.isStreaming || restoredState?.completed) {
+				const collapseCompletedActivity = options.collapseCompletedActivity ?? false;
+				turn.complete({
+					defaultExpanded: collapseCompletedActivity ? false : this.toolOutputExpanded,
+					...(restoredState?.completed
+						? { restoredExpansion: this.restoringExpansionState?.assistantRegions }
+						: {}),
+				});
+			} else if (this.restoringExpansionState) {
+				turn.foldBeforeLast({
+					defaultExpanded: this.toolOutputExpanded,
+					restoredExpansion: this.restoringExpansionState.assistantRegions,
+				});
+			}
+		}
+		this.activeAssistantTurn = undefined;
+	}
+
+	private settleAssistantTurns(): void {
+		const unsettled = [...this.assistantTurns].filter((turn) => !turn.isCompleted());
+		if (unsettled.length === 0) return;
+		for (const turn of unsettled) turn.reconcileBoundaries(this.chatContainer.children);
+		let viewState = TuiLayouts.isViewportTUI(this.renderer) ? this.renderer.captureTranscriptViewState() : undefined;
+		const changedTurns = unsettled.filter((turn) => turn.complete({ defaultExpanded: this.toolOutputExpanded }));
+		this.activeAssistantTurn = undefined;
+		if (changedTurns.length === 0) return;
+		if (viewState?.viewportAnchor) {
+			for (const turn of changedTurns) {
+				const entryId = turn.getFoldedEntryRedirect(viewState.viewportAnchor.entryId);
+				if (!entryId) continue;
+				viewState = { ...viewState, viewportAnchor: { entryId, rowOffset: 0 } };
+				break;
+			}
+		}
+		if (viewState && TuiLayouts.isViewportTUI(this.renderer)) {
+			this.renderer.restoreTranscriptViewState(viewState);
+		}
+		this.ui.requestRender();
+	}
+
 	private createTranscriptEntry(
 		entryId: string | undefined,
 		children: readonly Component[],
@@ -4042,6 +4156,17 @@ export class InteractiveMode {
 		for (const [key, component] of this.expandableTranscriptComponents) {
 			this.transcriptExpansionState.expandable.set(key, component.isExpanded());
 		}
+		for (const turn of this.assistantTurns) {
+			const state = { completed: turn.isCompleted() };
+			for (const stateKey of turn.getStateKeys()) {
+				this.transcriptExpansionState.assistantTurns.set(stateKey, state);
+			}
+			for (const regionState of turn.getRegionExpansionStates()) {
+				for (const stateKey of regionState.stateKeys) {
+					this.transcriptExpansionState.assistantRegions.set(stateKey, regionState.expanded);
+				}
+			}
+		}
 		return this.transcriptExpansionState;
 	}
 
@@ -4082,6 +4207,8 @@ export class InteractiveMode {
 		this.assistantComponents.clear();
 		this.toolComponents.clear();
 		this.expandableTranscriptComponents.clear();
+		this.assistantTurns.clear();
+		this.activeAssistantTurn = undefined;
 		this.pendingTools.clear();
 		this.streamingComponent = undefined;
 		this.streamingGroup = undefined;
@@ -4318,7 +4445,7 @@ export class InteractiveMode {
 					this.registerAssistantComponent(entryId, component);
 				}
 				wrapper = group;
-				this.chatContainer.addChild(group);
+				this.addAssistantGroupToTurn(group);
 				break;
 			}
 			case "toolResult":
@@ -4355,14 +4482,12 @@ export class InteractiveMode {
 		this.streamingGroup = group;
 		this.streamingMessage = message;
 		this.renderedEntriesByMessage.set(message, group);
-		this.chatContainer.addChild(group);
+		this.addAssistantGroupToTurn(group);
+		this.foldActiveAssistantPrefix();
 		return group;
 	}
 
-	private renderTranscriptItems(
-		items: readonly TranscriptItem[],
-		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
-	): void {
+	private renderTranscriptItems(items: readonly TranscriptItem[], options: RenderTranscriptOptions = {}): void {
 		const cacheMisses = this.settingsManager.getShowCacheMissNotices()
 			? collectCacheMisses(this.sessionManager.getEntries(), this.session.modelRuntime)
 			: new Map<AssistantMessage, CacheMiss>();
@@ -4398,6 +4523,9 @@ export class InteractiveMode {
 					break;
 				}
 				case "user":
+					this.completeActiveAssistantTurn({
+						collapseCompletedActivity: options.collapseCompletedActivity,
+					});
 					this.addMessageToChat(item.message, { entryId: item.entryId, populateHistory: options.populateHistory });
 					break;
 				case "bash":
@@ -4445,13 +4573,17 @@ export class InteractiveMode {
 					break;
 			}
 		}
+		if (!this.session.isStreaming) {
+			this.completeActiveAssistantTurn({
+				collapseCompletedActivity: options.collapseCompletedActivity,
+			});
+		} else if (this.restoringExpansionState) {
+			this.foldActiveAssistantPrefix();
+		}
 		this.ui.requestRender();
 	}
 
-	private renderSessionEntries(
-		entries: SessionEntry[],
-		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
-	): void {
+	private renderSessionEntries(entries: SessionEntry[], options: RenderTranscriptOptions = {}): void {
 		// Selection coordinates point into the transcript being replaced (#9311).
 		if (this.renderer instanceof TuiAltScreen) this.renderer.resetTextSelection();
 		this.renderTranscriptItems(buildTranscriptItems(entries), options);
@@ -4567,8 +4699,11 @@ export class InteractiveMode {
 		}
 	}
 
-	renderInitialMessages(): void {
-		this.renderSessionEntries(this.getVisibleTranscriptEntries(), { updateFooter: true });
+	renderInitialMessages(options: { collapseCompletedActivity?: boolean } = {}): void {
+		this.renderSessionEntries(this.getVisibleTranscriptEntries(), {
+			updateFooter: true,
+			collapseCompletedActivity: options.collapseCompletedActivity ?? true,
+		});
 		this.populateEditorHistoryFromContext();
 		this.renderProjectTrustWarningIfNeeded();
 
@@ -4929,6 +5064,8 @@ export class InteractiveMode {
 		this.toolOutputExpanded = expanded;
 		this.transcriptExpansionState.tools.clear();
 		this.transcriptExpansionState.expandable.clear();
+		this.transcriptExpansionState.assistantTurns.clear();
+		this.transcriptExpansionState.assistantRegions.clear();
 		const activeHeader = this.customHeader ?? this.builtInHeader;
 		if (isExpandable(activeHeader)) {
 			activeHeader.setExpanded(expanded);
@@ -4937,6 +5074,7 @@ export class InteractiveMode {
 			if (isExpandable(child)) child.setExpanded(expanded);
 		}
 		for (const component of this.expandableTranscriptComponents.values()) component.setExpanded(expanded);
+		for (const turn of this.assistantTurns) turn.setExpanded(expanded);
 		for (const component of this.toolComponents.values()) component.setExpanded(expanded);
 		for (const component of this.liveTools.values()) component.setExpanded(expanded);
 		for (const wrapper of this.pendingBashEntryComponents) {

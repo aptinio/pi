@@ -84,7 +84,10 @@ describe("InteractiveMode transcript projection", () => {
 
 		renderInitialMessages.call(fakeThis);
 
-		expect(fakeThis.renderSessionEntries).toHaveBeenCalledWith(fullBranch, { updateFooter: true });
+		expect(fakeThis.renderSessionEntries).toHaveBeenCalledWith(fullBranch, {
+			updateFooter: true,
+			collapseCompletedActivity: true,
+		});
 		expect(fakeThis.populateEditorHistoryFromContext).toHaveBeenCalledOnce();
 	});
 
@@ -96,7 +99,16 @@ describe("InteractiveMode transcript projection", () => {
 				tools: new Map<string, ToolExpansionState>(),
 				thinking: new Map<string, ReadonlyMap<number, boolean>>(),
 				expandable: new Map<string, boolean>(),
+				assistantTurns: new Map<string, { completed: boolean }>(),
+				assistantRegions: new Map<string, boolean>(),
 			},
+			assistantTurns: new Set([
+				{
+					getStateKeys: () => ["old"],
+					isCompleted: () => true,
+					getRegionExpansionStates: () => [{ stateKeys: ["old:thinking:0"], expanded: true }],
+				},
+			]),
 			toolComponents: new Map([["old:0:tool", oldTool]]),
 			assistantComponents: new Map<string, { getThinkingVisibilityOverrides(): ReadonlyMap<number, boolean> }>(),
 			expandableTranscriptComponents: new Map<string, { isExpanded(): boolean }>(),
@@ -107,6 +119,8 @@ describe("InteractiveMode transcript projection", () => {
 						tools: Map<string, ToolExpansionState>;
 						thinking: Map<string, ReadonlyMap<number, boolean>>;
 						expandable: Map<string, boolean>;
+						assistantTurns: Map<string, { completed: boolean }>;
+						assistantRegions: Map<string, boolean>;
 				  }
 				| undefined,
 			toolOutputExpanded: false,
@@ -132,6 +146,8 @@ describe("InteractiveMode transcript projection", () => {
 				["new:0:tool", "preview"],
 			]),
 		);
+		expect(fakeThis.transcriptExpansionState.assistantTurns).toEqual(new Map([["old", { completed: true }]]));
+		expect(fakeThis.transcriptExpansionState.assistantRegions).toEqual(new Map([["old:thinking:0", true]]));
 
 		const restoredTool = {
 			setExpansionState: vi.fn(),
@@ -149,17 +165,21 @@ describe("InteractiveMode transcript projection", () => {
 		const thinkingOverrides = new Map([["hidden-assistant", new Map([[0, true]])]]);
 		const mountedTool = { setExpanded: vi.fn() };
 		const mountedExpandable = { setExpanded: vi.fn() };
+		const mountedTurn = { setExpanded: vi.fn() };
 		const fakeThis = {
 			toolOutputExpanded: false,
 			transcriptExpansionState: {
 				tools: new Map([[hiddenToolKey, "collapsed"]]),
 				thinking: thinkingOverrides,
 				expandable: new Map([[hiddenExpandableKey, false]]),
+				assistantTurns: new Map([["hidden-turn", { completed: true }]]),
+				assistantRegions: new Map([["hidden-turn:thinking:0", false]]),
 			},
 			customHeader: undefined,
 			builtInHeader: undefined,
 			loadedResourcesContainer: { children: [] },
 			expandableTranscriptComponents: new Map([["mounted", mountedExpandable]]),
+			assistantTurns: new Set([mountedTurn]),
 			toolComponents: new Map([["mounted", mountedTool]]),
 			liveTools: new Map(),
 			pendingBashEntryComponents: [] as TranscriptEntryComponent[],
@@ -174,9 +194,213 @@ describe("InteractiveMode transcript projection", () => {
 
 		expect(fakeThis.transcriptExpansionState.tools).toEqual(new Map());
 		expect(fakeThis.transcriptExpansionState.expandable).toEqual(new Map());
+		expect(fakeThis.transcriptExpansionState.assistantTurns).toEqual(new Map());
+		expect(fakeThis.transcriptExpansionState.assistantRegions).toEqual(new Map());
 		expect(fakeThis.transcriptExpansionState.thinking).toBe(thinkingOverrides);
 		expect(mountedTool.setExpanded).toHaveBeenCalledWith(true);
 		expect(mountedExpandable.setExpanded).toHaveBeenCalledWith(true);
+		expect(mountedTurn.setExpanded).toHaveBeenCalledWith(true);
+	});
+
+	test("groups consecutive assistant messages into one turn until a user boundary", () => {
+		const groups = ["assistant-1", "assistant-2", "assistant-3"].map(
+			(id) =>
+				new AssistantTranscriptGroup(
+					id,
+					assistantMessage([{ type: "text", text: id }]),
+					new Container() as unknown as AssistantMessageComponent,
+				),
+		);
+		const fakeThis = {
+			activeAssistantTurn: undefined,
+			assistantTurns: new Set(),
+			outputPad: 1,
+			chatContainer: new Container(),
+		};
+		const addAssistantGroupToTurn = Reflect.get(InteractiveMode.prototype, "addAssistantGroupToTurn") as (
+			this: typeof fakeThis,
+			group: AssistantTranscriptGroup,
+		) => void;
+
+		addAssistantGroupToTurn.call(fakeThis, groups[0]!);
+		addAssistantGroupToTurn.call(fakeThis, groups[1]!);
+		expect(fakeThis.assistantTurns.size).toBe(1);
+
+		fakeThis.activeAssistantTurn = undefined;
+		addAssistantGroupToTurn.call(fakeThis, groups[2]!);
+		expect(fakeThis.assistantTurns.size).toBe(2);
+		expect(fakeThis.chatContainer.children).toHaveLength(3);
+	});
+
+	test("folds the completed prefix after mounting a continuing assistant message", () => {
+		const fakeThis = {
+			persistedEntryIdsByMessage: new WeakMap<object, string>(),
+			hideThinkingBlock: false,
+			getMarkdownThemeWithSettings: () => ({}),
+			hiddenThinkingLabel: "Thinking",
+			outputPad: 1,
+			getMarkdownTransformers: () => [],
+			streamingComponent: undefined,
+			streamingGroup: undefined,
+			streamingMessage: undefined,
+			renderedEntriesByMessage: new WeakMap<object, AssistantTranscriptGroup>(),
+			addAssistantGroupToTurn: vi.fn(),
+			foldActiveAssistantPrefix: vi.fn(),
+		};
+		const addStreamingAssistant = Reflect.get(InteractiveMode.prototype, "addStreamingAssistant") as (
+			this: typeof fakeThis,
+			message: AssistantMessage,
+		) => AssistantTranscriptGroup;
+
+		const group = addStreamingAssistant.call(
+			fakeThis,
+			assistantMessage([{ type: "thinking", thinking: "continuing" }]),
+		);
+
+		expect(fakeThis.addAssistantGroupToTurn).toHaveBeenCalledWith(group);
+		expect(fakeThis.foldActiveAssistantPrefix).toHaveBeenCalledOnce();
+		expect(fakeThis.addAssistantGroupToTurn.mock.invocationCallOrder[0]).toBeLessThan(
+			fakeThis.foldActiveAssistantPrefix.mock.invocationCallOrder[0]!,
+		);
+	});
+
+	test("collapses completed turns during cold session replay", () => {
+		const turn = {
+			getStateKeys: () => ["assistant-1"],
+			reconcileBoundaries: vi.fn(),
+			complete: vi.fn(),
+		};
+		const fakeThis = {
+			activeAssistantTurn: turn,
+			chatContainer: { children: [] as Component[] },
+			toolOutputExpanded: true,
+			session: { isStreaming: false },
+			restoringExpansionState: undefined,
+		};
+		const completeActiveAssistantTurn = Reflect.get(InteractiveMode.prototype, "completeActiveAssistantTurn") as (
+			this: typeof fakeThis,
+			options?: { collapseCompletedActivity?: boolean },
+		) => void;
+
+		completeActiveAssistantTurn.call(fakeThis, { collapseCompletedActivity: true });
+
+		expect(turn.reconcileBoundaries).toHaveBeenCalledWith(fakeThis.chatContainer.children);
+		expect(turn.complete).toHaveBeenCalledWith({ defaultExpanded: false });
+		expect(fakeThis.activeAssistantTurn).toBeUndefined();
+	});
+
+	test("keeps the global expansion default for non-replay completion", () => {
+		const turn = {
+			getStateKeys: () => ["assistant-1"],
+			reconcileBoundaries: vi.fn(),
+			complete: vi.fn(),
+		};
+		const fakeThis = {
+			activeAssistantTurn: turn,
+			chatContainer: { children: [] as Component[] },
+			toolOutputExpanded: true,
+			session: { isStreaming: false },
+			restoringExpansionState: undefined,
+		};
+		const completeActiveAssistantTurn = Reflect.get(InteractiveMode.prototype, "completeActiveAssistantTurn") as (
+			this: typeof fakeThis,
+		) => void;
+
+		completeActiveAssistantTurn.call(fakeThis);
+
+		expect(turn.complete).toHaveBeenCalledWith({ defaultExpanded: true });
+	});
+
+	test("restores a manually expanded completed turn after transcript reconstruction", () => {
+		const turn = {
+			getStateKeys: () => ["omitted-assistant", "assistant-1"],
+			reconcileBoundaries: vi.fn(),
+			complete: vi.fn(),
+		};
+		const fakeThis = {
+			activeAssistantTurn: turn,
+			chatContainer: { children: [] as Component[] },
+			toolOutputExpanded: false,
+			session: { isStreaming: false },
+			restoringExpansionState: {
+				tools: new Map(),
+				thinking: new Map(),
+				expandable: new Map(),
+				assistantTurns: new Map([["assistant-1", { completed: true }]]),
+				assistantRegions: new Map([["assistant-1:thinking:0", true]]),
+			},
+		};
+		const completeActiveAssistantTurn = Reflect.get(InteractiveMode.prototype, "completeActiveAssistantTurn") as (
+			this: typeof fakeThis,
+		) => void;
+
+		completeActiveAssistantTurn.call(fakeThis);
+
+		expect(turn.reconcileBoundaries).toHaveBeenCalledWith(fakeThis.chatContainer.children);
+		expect(turn.complete).toHaveBeenCalledWith({
+			defaultExpanded: false,
+			restoredExpansion: fakeThis.restoringExpansionState.assistantRegions,
+		});
+		expect(fakeThis.activeAssistantTurn).toBeUndefined();
+	});
+
+	test("uses the normal completion default when an unsettled restored turn finishes after streaming", () => {
+		const turn = { getStateKeys: () => ["assistant-1"], reconcileBoundaries: vi.fn(), complete: vi.fn() };
+		const fakeThis = {
+			activeAssistantTurn: turn,
+			chatContainer: { children: [] as Component[] },
+			toolOutputExpanded: false,
+			session: { isStreaming: false },
+			restoringExpansionState: {
+				tools: new Map(),
+				thinking: new Map(),
+				expandable: new Map(),
+				assistantTurns: new Map([["assistant-1", { completed: false }]]),
+				assistantRegions: new Map([["assistant-1:thinking:0", true]]),
+			},
+		};
+		const completeActiveAssistantTurn = Reflect.get(InteractiveMode.prototype, "completeActiveAssistantTurn") as (
+			this: typeof fakeThis,
+		) => void;
+
+		completeActiveAssistantTurn.call(fakeThis);
+
+		expect(turn.complete).toHaveBeenCalledWith({ defaultExpanded: false });
+		expect(fakeThis.activeAssistantTurn).toBeUndefined();
+	});
+
+	test("restores a previously unsettled turn's provisional prefix during streaming reconstruction", () => {
+		const turn = {
+			getStateKeys: () => ["assistant-1"],
+			reconcileBoundaries: vi.fn(),
+			complete: vi.fn(),
+			foldBeforeLast: vi.fn(),
+		};
+		const fakeThis = {
+			activeAssistantTurn: turn,
+			chatContainer: { children: [] as Component[] },
+			toolOutputExpanded: false,
+			session: { isStreaming: true },
+			restoringExpansionState: {
+				tools: new Map(),
+				thinking: new Map(),
+				expandable: new Map(),
+				assistantTurns: new Map([["assistant-1", { completed: false }]]),
+				assistantRegions: new Map([["assistant-1:thinking:0", true]]),
+			},
+		};
+		const completeActiveAssistantTurn = Reflect.get(InteractiveMode.prototype, "completeActiveAssistantTurn") as (
+			this: typeof fakeThis,
+		) => void;
+
+		completeActiveAssistantTurn.call(fakeThis);
+
+		expect(turn.complete).not.toHaveBeenCalled();
+		expect(turn.foldBeforeLast).toHaveBeenCalledWith({
+			defaultExpanded: false,
+			restoredExpansion: fakeThis.restoringExpansionState.assistantRegions,
+		});
+		expect(fakeThis.activeAssistantTurn).toBeUndefined();
 	});
 
 	test("does not restore completed live tools as pending", () => {
@@ -249,6 +473,8 @@ describe("InteractiveMode transcript projection", () => {
 			createToolComponent: vi.fn(() => new Container() as unknown as ToolExecutionComponent),
 			registerToolComponent: vi.fn(),
 			pendingTools: new Map<string, ToolExecutionComponent>(),
+			session: { isStreaming: false },
+			completeActiveAssistantTurn: vi.fn(),
 			ui: { requestRender: vi.fn() },
 		};
 		const renderTranscriptItems = Reflect.get(InteractiveMode.prototype, "renderTranscriptItems") as (
@@ -275,6 +501,224 @@ describe("InteractiveMode transcript projection", () => {
 		expect([...fakeThis.pendingTools.keys()]).toEqual(["current-id"]);
 	});
 
+	test("uses a replayed user message as a turn boundary", () => {
+		const completeActiveAssistantTurn = vi.fn();
+		const addMessageToChat = vi.fn();
+		const fakeThis = {
+			completeActiveAssistantTurn,
+			addMessageToChat,
+			settingsManager: { getShowCacheMissNotices: () => false },
+			sessionManager: { getEntries: () => [] },
+			session: { isStreaming: true },
+			ui: { requestRender: vi.fn() },
+		};
+		const renderTranscriptItems = Reflect.get(InteractiveMode.prototype, "renderTranscriptItems") as (
+			this: typeof fakeThis,
+			items: readonly TranscriptItem[],
+		) => void;
+		const message = { role: "user" as const, content: "next request", timestamp: 1 };
+
+		renderTranscriptItems.call(fakeThis, [{ kind: "user", entryId: "user-1", message }]);
+
+		expect(completeActiveAssistantTurn).toHaveBeenCalledOnce();
+		expect(addMessageToChat).toHaveBeenCalledWith(message, { entryId: "user-1", populateHistory: undefined });
+		expect(completeActiveAssistantTurn.mock.invocationCallOrder[0]).toBeLessThan(
+			addMessageToChat.mock.invocationCallOrder[0]!,
+		);
+	});
+
+	test("uses a live user message as a turn boundary", async () => {
+		const activeAssistantTurn = {};
+		const message = { role: "user" as const, content: "next request", timestamp: 1 };
+		const fakeThis = {
+			isInitialized: true,
+			footer: { invalidate: vi.fn() },
+			activeAssistantTurn,
+			addMessageToChat: vi.fn(),
+			updatePendingMessagesDisplay: vi.fn(),
+			ui: { requestRender: vi.fn() },
+		};
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof fakeThis,
+			event: { type: "message_start"; message: typeof message },
+		) => Promise<void>;
+
+		await handleEvent.call(fakeThis, { type: "message_start", message });
+
+		expect(fakeThis.activeAssistantTurn).toBeUndefined();
+		expect(fakeThis.addMessageToChat).toHaveBeenCalledWith(message);
+	});
+
+	test("folds completed assistant turns at the final settled boundary", async () => {
+		const fakeThis = {
+			isInitialized: true,
+			footer: { invalidate: vi.fn() },
+			settleAssistantTurns: vi.fn(),
+			checkShutdownRequested: vi.fn(async () => undefined),
+		};
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof fakeThis,
+			event: { type: "agent_settled" },
+		) => Promise<void>;
+
+		await handleEvent.call(fakeThis, { type: "agent_settled" });
+
+		expect(fakeThis.settleAssistantTurns).toHaveBeenCalledOnce();
+		expect(fakeThis.checkShutdownRequested).toHaveBeenCalledOnce();
+	});
+
+	test("preserves the fullscreen transcript anchor while folding a completed assistant prefix", () => {
+		const viewState = {
+			sessionId: "session-1",
+			followingEnd: false,
+			followSuppressed: true,
+			viewportAnchor: { entryId: "assistant-2", rowOffset: 12 },
+		};
+		const renderer = {
+			[Symbol.for("@earendil-works/pi-tui/viewport")]: true,
+			captureTranscriptViewState: vi.fn(() => viewState),
+			restoreTranscriptViewState: vi.fn(),
+		};
+		const activeTurn = {
+			reconcileBoundaries: vi.fn(),
+			foldBeforeLast: vi.fn(() => true),
+			getFoldedEntryRedirect: vi.fn(() => "assistant-1"),
+		};
+		const fakeThis = {
+			renderer,
+			chatContainer: { children: [] as Component[] },
+			toolOutputExpanded: false,
+			activeAssistantTurn: activeTurn,
+			restoringExpansionState: undefined,
+			ui: { requestRender: vi.fn() },
+		};
+		const foldActiveAssistantPrefix = Reflect.get(InteractiveMode.prototype, "foldActiveAssistantPrefix") as (
+			this: typeof fakeThis,
+		) => void;
+
+		foldActiveAssistantPrefix.call(fakeThis);
+
+		expect(activeTurn.reconcileBoundaries).toHaveBeenCalledWith(fakeThis.chatContainer.children);
+		expect(activeTurn.foldBeforeLast).toHaveBeenCalledWith({ defaultExpanded: false });
+		expect(renderer.restoreTranscriptViewState).toHaveBeenCalledWith({
+			...viewState,
+			viewportAnchor: { entryId: "assistant-1", rowOffset: 0 },
+		});
+		expect(fakeThis.ui.requestRender).toHaveBeenCalledOnce();
+	});
+
+	test("restores provisional region state without restoring an intermediate reconstruction viewport", () => {
+		const restoredExpansion = new Map([["assistant-1:thinking:0", true]]);
+		const renderer = {
+			[Symbol.for("@earendil-works/pi-tui/viewport")]: true,
+			captureTranscriptViewState: vi.fn(),
+			restoreTranscriptViewState: vi.fn(),
+		};
+		const activeTurn = {
+			reconcileBoundaries: vi.fn(),
+			foldBeforeLast: vi.fn(() => true),
+			getFoldedEntryRedirect: vi.fn(),
+		};
+		const fakeThis = {
+			renderer,
+			chatContainer: { children: [] as Component[] },
+			toolOutputExpanded: false,
+			activeAssistantTurn: activeTurn,
+			restoringExpansionState: {
+				tools: new Map(),
+				thinking: new Map(),
+				expandable: new Map(),
+				assistantTurns: new Map(),
+				assistantRegions: restoredExpansion,
+			},
+			ui: { requestRender: vi.fn() },
+		};
+		const foldActiveAssistantPrefix = Reflect.get(InteractiveMode.prototype, "foldActiveAssistantPrefix") as (
+			this: typeof fakeThis,
+		) => void;
+
+		foldActiveAssistantPrefix.call(fakeThis);
+
+		expect(activeTurn.foldBeforeLast).toHaveBeenCalledWith({
+			defaultExpanded: false,
+			restoredExpansion,
+		});
+		expect(renderer.captureTranscriptViewState).not.toHaveBeenCalled();
+		expect(renderer.restoreTranscriptViewState).not.toHaveBeenCalled();
+	});
+
+	test("preserves the fullscreen transcript anchor while settling assistant turns", () => {
+		const viewState = {
+			sessionId: "session-1",
+			followingEnd: false,
+			followSuppressed: true,
+			viewportAnchor: { entryId: "assistant-2", rowOffset: 12 },
+		};
+		const renderer = {
+			[Symbol.for("@earendil-works/pi-tui/viewport")]: true,
+			captureTranscriptViewState: vi.fn(() => viewState),
+			restoreTranscriptViewState: vi.fn(),
+		};
+		const completedTurn = {
+			complete: vi.fn(() => true),
+			isCompleted: () => false,
+			reconcileBoundaries: vi.fn(),
+			getFoldedEntryRedirect: vi.fn(() => "assistant-1"),
+		};
+		const fakeThis = {
+			renderer,
+			chatContainer: { children: [] as Component[] },
+			toolOutputExpanded: false,
+			assistantTurns: new Set([completedTurn]),
+			activeAssistantTurn: completedTurn,
+			ui: { requestRender: vi.fn() },
+		};
+		const settleAssistantTurns = Reflect.get(InteractiveMode.prototype, "settleAssistantTurns") as (
+			this: typeof fakeThis,
+		) => void;
+
+		settleAssistantTurns.call(fakeThis);
+
+		expect(completedTurn.reconcileBoundaries).toHaveBeenCalledWith(fakeThis.chatContainer.children);
+		expect(completedTurn.complete).toHaveBeenCalledWith({ defaultExpanded: false });
+		expect(fakeThis.activeAssistantTurn).toBeUndefined();
+		expect(renderer.restoreTranscriptViewState).toHaveBeenCalledWith({
+			...viewState,
+			viewportAnchor: { entryId: "assistant-1", rowOffset: 0 },
+		});
+		expect(fakeThis.ui.requestRender).toHaveBeenCalledOnce();
+	});
+
+	test("does not restore fullscreen view state when settling makes no presentation change", () => {
+		const renderer = {
+			[Symbol.for("@earendil-works/pi-tui/viewport")]: true,
+			captureTranscriptViewState: vi.fn(() => ({ sessionId: "session-1" })),
+			restoreTranscriptViewState: vi.fn(),
+		};
+		const completedTurn = {
+			complete: vi.fn(() => false),
+			isCompleted: () => false,
+			reconcileBoundaries: vi.fn(),
+		};
+		const fakeThis = {
+			renderer,
+			chatContainer: { children: [] as Component[] },
+			toolOutputExpanded: false,
+			assistantTurns: new Set([completedTurn]),
+			activeAssistantTurn: completedTurn,
+			ui: { requestRender: vi.fn() },
+		};
+		const settleAssistantTurns = Reflect.get(InteractiveMode.prototype, "settleAssistantTurns") as (
+			this: typeof fakeThis,
+		) => void;
+
+		settleAssistantTurns.call(fakeThis);
+
+		expect(renderer.captureTranscriptViewState).toHaveBeenCalledOnce();
+		expect(renderer.restoreTranscriptViewState).not.toHaveBeenCalled();
+		expect(fakeThis.ui.requestRender).not.toHaveBeenCalled();
+	});
+
 	test("restores fullscreen view state during a same-session rebind", () => {
 		const events: string[] = [];
 		const viewState = { sessionId: "session-1" };
@@ -294,9 +738,17 @@ describe("InteractiveMode transcript projection", () => {
 				tools: new Map(),
 				thinking: new Map(),
 				expandable: new Map(),
+				assistantTurns: new Map(),
+				assistantRegions: new Map(),
 			})),
 			captureTransientTranscriptState: vi.fn(() => ({ liveTools: new Map() })),
-			transcriptExpansionState: { tools: new Map(), thinking: new Map(), expandable: new Map() },
+			transcriptExpansionState: {
+				tools: new Map(),
+				thinking: new Map(),
+				expandable: new Map(),
+				assistantTurns: new Map(),
+				assistantRegions: new Map(),
+			},
 			renderer,
 			clearTranscriptPromptSelection: vi.fn(() => events.push("clear-selection")),
 			loadedResourcesContainer: { clear: vi.fn() },
@@ -320,7 +772,53 @@ describe("InteractiveMode transcript projection", () => {
 		renderCurrentSessionState.call(fakeThis, true);
 
 		expect(events).toEqual(["capture-view", "clear-selection", "render", "restore-view"]);
+		expect(fakeThis.renderInitialMessages).toHaveBeenCalledWith({ collapseCompletedActivity: false });
 		expect(renderer.restoreTranscriptViewState).toHaveBeenCalledWith(viewState);
+	});
+
+	test("does not restore presentation state during a cold session switch", () => {
+		const renderedWith: Array<unknown> = [];
+		let restorationStateDuringRender: unknown;
+		const fakeThis = {
+			captureTranscriptExpansionState: vi.fn(),
+			captureTransientTranscriptState: vi.fn(),
+			transcriptExpansionState: {
+				tools: new Map(),
+				thinking: new Map(),
+				expandable: new Map(),
+				assistantTurns: new Map(),
+				assistantRegions: new Map(),
+			},
+			renderer: {},
+			clearTranscriptPromptSelection: vi.fn(),
+			loadedResourcesContainer: { clear: vi.fn() },
+			chatContainer: { clear: vi.fn() },
+			pendingMessagesContainer: { clear: vi.fn() },
+			compactionQueuedMessages: [],
+			clearTranscriptRegistries: vi.fn(),
+			streamingMessage: undefined,
+			liveTools: new Map([["old", {}]]),
+			pendingBashEntryComponents: [] as TranscriptEntryComponent[],
+			restoringExpansionState: undefined,
+			renderInitialMessages: vi.fn((options: unknown) => {
+				renderedWith.push(options);
+				restorationStateDuringRender = fakeThis.restoringExpansionState;
+			}),
+			addStreamingAssistant: vi.fn(),
+			restoreTransientTranscriptState: vi.fn(),
+		};
+		const renderCurrentSessionState = Reflect.get(InteractiveMode.prototype, "renderCurrentSessionState") as (
+			this: typeof fakeThis,
+			preservePresentationState: boolean,
+		) => void;
+
+		renderCurrentSessionState.call(fakeThis, false);
+
+		expect(fakeThis.captureTranscriptExpansionState).not.toHaveBeenCalled();
+		expect(fakeThis.captureTransientTranscriptState).not.toHaveBeenCalled();
+		expect(renderedWith).toEqual([{ collapseCompletedActivity: true }]);
+		expect(restorationStateDuringRender).toBeUndefined();
+		expect(fakeThis.liveTools.size).toBe(0);
 	});
 
 	test("rehydrates an active chat bash wrapper across transcript rebuilds", () => {
