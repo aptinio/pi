@@ -6,6 +6,7 @@ import type { AgentSessionEvent } from "../../../src/core/agent-session.ts";
 import type { SessionEntry } from "../../../src/core/session-manager.ts";
 import { AssistantMessageComponent } from "../../../src/modes/interactive/components/assistant-message.ts";
 import { AssistantTranscriptGroup } from "../../../src/modes/interactive/components/assistant-transcript-group.ts";
+import type { AssistantTurn } from "../../../src/modes/interactive/components/assistant-turn.ts";
 import type {
 	ToolExecutionComponent,
 	ToolExpansionState,
@@ -43,6 +44,8 @@ type RenderSessionContextThis = {
 	streamingComponent?: AssistantMessageComponent;
 	streamingGroup?: AssistantTranscriptGroup;
 	streamingMessage?: AssistantMessage;
+	activeAssistantTurn?: AssistantTurn;
+	assistantTurns: Set<AssistantTurn>;
 	chatContainer: Container;
 	footer: { invalidate(): void };
 	ui: TUI;
@@ -54,6 +57,7 @@ type RenderSessionContextThis = {
 	sessionManager: { getCwd(): string; getEntries(): SessionEntry[] };
 	session: {
 		retryAttempt: number;
+		isStreaming: boolean;
 		modelRuntime: object;
 		extensionRunner: { getMessageRenderer(): undefined };
 	};
@@ -79,6 +83,8 @@ type RenderSessionContextThis = {
 				tools: Map<string, ToolExpansionState>;
 				thinking: Map<string, ReadonlyMap<number, boolean>>;
 				expandable: Map<string, boolean>;
+				assistantTurns: Map<string, { completed: boolean }>;
+				assistantRegions: Map<string, boolean>;
 		  }
 		| undefined;
 	persistedEntryIdsByMessage: WeakMap<object, string>;
@@ -95,6 +101,8 @@ type RenderSessionContextThis = {
 	): void;
 	getToolStateKey(assistantEntryId: string, contentIndex: number, toolCallId: string): string;
 	createToolComponent(toolName: string, toolCallId: string, args: unknown): ToolExecutionComponent;
+	addAssistantGroupToTurn(group: AssistantTranscriptGroup): void;
+	completeActiveAssistantTurn(): void;
 	addMessageToChat(
 		message: AgentMessage,
 		options?: { entryId?: string; populateHistory?: boolean },
@@ -114,7 +122,7 @@ type AddMessageToChat = (
 type RenderSessionEntries = (
 	this: RenderSessionContextThis,
 	entries: SessionEntry[],
-	options?: { updateFooter?: boolean; populateHistory?: boolean },
+	options?: { updateFooter?: boolean; populateHistory?: boolean; collapseCompletedActivity?: boolean },
 ) => void;
 
 type HandleEvent = (this: RenderSessionContextThis, event: AgentSessionEvent) => Promise<void>;
@@ -127,6 +135,8 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 		streamingComponent: undefined,
 		streamingGroup: undefined,
 		streamingMessage: undefined,
+		activeAssistantTurn: undefined,
+		assistantTurns: new Set<AssistantTurn>(),
 		chatContainer,
 		footer: { invalidate: vi.fn() },
 		ui: { requestRender: vi.fn() } as unknown as TUI,
@@ -138,6 +148,7 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 		sessionManager: { getCwd: () => process.cwd(), getEntries: () => [] },
 		session: {
 			retryAttempt: 0,
+			isStreaming: false,
 			modelRuntime: {},
 			extensionRunner: { getMessageRenderer: () => undefined },
 		},
@@ -173,6 +184,8 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 		registerToolComponent: RenderSessionContextThis["registerToolComponent"];
 		getToolStateKey: RenderSessionContextThis["getToolStateKey"];
 		createToolComponent: RenderSessionContextThis["createToolComponent"];
+		addAssistantGroupToTurn: RenderSessionContextThis["addAssistantGroupToTurn"];
+		completeActiveAssistantTurn: RenderSessionContextThis["completeActiveAssistantTurn"];
 		addMessageToChat: AddMessageToChat;
 		renderTranscriptItems: RenderSessionContextThis["renderTranscriptItems"];
 	};
@@ -182,6 +195,8 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 	context.registerToolComponent = prototype.registerToolComponent;
 	context.getToolStateKey = prototype.getToolStateKey;
 	context.createToolComponent = prototype.createToolComponent;
+	context.addAssistantGroupToTurn = prototype.addAssistantGroupToTurn;
+	context.completeActiveAssistantTurn = prototype.completeActiveAssistantTurn;
 	context.addMessageToChat = (message, options) => prototype.addMessageToChat.call(context, message, options);
 	context.renderTranscriptItems = prototype.renderTranscriptItems;
 	return context;
@@ -249,6 +264,10 @@ function renderChat(container: Container): string {
 	return stripAnsi(container.render(120).join("\n"));
 }
 
+function expandAssistantTurns(context: RenderSessionContextThis): void {
+	for (const turn of context.assistantTurns) turn.setExpanded(true);
+}
+
 describe("InteractiveMode.renderSessionEntries", () => {
 	beforeAll(() => {
 		initTheme("dark");
@@ -263,7 +282,10 @@ describe("InteractiveMode.renderSessionEntries", () => {
 			InteractiveMode.prototype as unknown as { renderSessionEntries: RenderSessionEntries }
 		).renderSessionEntries;
 
-		renderSessionEntries.call(fakeThis, createSessionEntries([createAssistantTextAndToolCallMessage()]));
+		renderSessionEntries.call(fakeThis, createSessionEntries([createAssistantTextAndToolCallMessage()]), {
+			collapseCompletedActivity: true,
+		});
+		expandAssistantTurns(fakeThis);
 
 		const lines = fakeThis.chatContainer.render(120);
 		const commentary = lines.find((line) => stripAnsi(line).includes("VISIBLE_COMMENTARY"));
@@ -289,8 +311,12 @@ describe("InteractiveMode.renderSessionEntries", () => {
 		const handleEvent = (InteractiveMode.prototype as unknown as { handleEvent: HandleEvent }).handleEvent;
 		fakeThis.liveTools.set(TOOL_CALL_ID, fakeThis.createToolComponent(TOOL_NAME, TOOL_CALL_ID, { delayMs: 10_000 }));
 
-		renderSessionEntries.call(fakeThis, createSessionEntries([createAssistantToolCallMessage()]));
+		renderSessionEntries.call(fakeThis, createSessionEntries([createAssistantToolCallMessage()]), {
+			collapseCompletedActivity: true,
+		});
 
+		expect(renderChat(fakeThis.chatContainer)).toContain("[+] 1 tool call, incomplete");
+		expandAssistantTurns(fakeThis);
 		expect(fakeThis.pendingTools.has(TOOL_CALL_ID)).toBe(true);
 
 		await handleEvent.call(fakeThis, {
@@ -335,9 +361,14 @@ describe("InteractiveMode.renderSessionEntries", () => {
 		renderSessionEntries.call(
 			fakeThis,
 			createSessionEntries([createAssistantToolCallMessage(), createToolResultMessage("HISTORICAL_RESULT")]),
+			{ collapseCompletedActivity: true },
 		);
 
 		expect(fakeThis.pendingTools.size).toBe(0);
+		expect(renderChat(fakeThis.chatContainer)).toContain("[+] 1 tool call, incomplete");
+		expect(renderChat(fakeThis.chatContainer)).not.toContain("HISTORICAL_RESULT");
+		expandAssistantTurns(fakeThis);
+		expect(renderChat(fakeThis.chatContainer)).toContain("[-] 1 tool call, incomplete");
 		expect(renderChat(fakeThis.chatContainer)).toContain("HISTORICAL_RESULT");
 	});
 
@@ -359,9 +390,13 @@ describe("InteractiveMode.renderSessionEntries", () => {
 				createToolResultMessage("FIRST_DUPLICATE_RESULT"),
 				createToolResultMessage("SECOND_DUPLICATE_RESULT"),
 			]),
+			{ collapseCompletedActivity: true },
 		);
 
 		expect(fakeThis.toolComponents.size).toBe(2);
+		expect(renderChat(fakeThis.chatContainer)).toContain("[+] 2 tool calls, incomplete");
+		expandAssistantTurns(fakeThis);
+		expect(renderChat(fakeThis.chatContainer)).toContain("[-] 2 tool calls, incomplete");
 		expect(renderChat(fakeThis.chatContainer)).toContain("FIRST_DUPLICATE_RESULT");
 		expect(renderChat(fakeThis.chatContainer)).toContain("SECOND_DUPLICATE_RESULT");
 	});

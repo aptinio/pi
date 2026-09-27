@@ -133,7 +133,13 @@ describe("InteractiveMode compaction events", () => {
 			tokensBefore: 100,
 			usage,
 		};
-		const expansionState = { tools: new Map(), thinking: new Map(), expandable: new Map() };
+		const expansionState = {
+			tools: new Map(),
+			thinking: new Map(),
+			expandable: new Map(),
+			assistantTurns: new Map(),
+			assistantRegions: new Map(),
+		};
 		const transientState = { liveTools: new Map(), bash: { snapshot: { command: "sleep 1" }, pendingIndex: 0 } };
 		const restoreTransientTranscriptState = vi.fn();
 		const fakeThis = {
@@ -257,6 +263,8 @@ describe("InteractiveMode compaction events", () => {
 				tools: new Map(),
 				thinking: new Map(),
 				expandable: new Map(),
+				assistantTurns: new Map(),
+				assistantRegions: new Map(),
 			})),
 			captureTransientTranscriptState: vi.fn(() => transientState),
 			clearTranscriptPromptSelection: vi.fn(),

@@ -5,7 +5,12 @@ import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode
 import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../../src/utils/ansi.ts";
 
-type UpdateThinkingBlockVisibility = (this: { chatContainer: Container; ui: TUI }) => void;
+type UpdateThinkingBlockVisibility = (this: {
+	assistantComponents: Map<string, { setHideThinkingBlock(hidden: boolean): void }>;
+	chatContainer: Container;
+	hideThinkingBlock: boolean;
+	ui: TUI;
+}) => void;
 
 type ToggleThinkingBlockVisibility = (this: {
 	hideThinkingBlock: boolean;
@@ -47,9 +52,11 @@ describe("thinking visibility while a bash tool is running (#8611)", () => {
 			InteractiveMode.prototype,
 			"toggleThinkingBlockVisibility",
 		) as ToggleThinkingBlockVisibility;
+		const assistant = { setHideThinkingBlock: vi.fn() };
 		const fakeThis = {
 			hideThinkingBlock: false,
 			settingsManager: { setHideThinkingBlock: vi.fn() },
+			assistantComponents: new Map([["assistant", assistant]]),
 			chatContainer,
 			ui,
 			updateThinkingBlockVisibility() {
@@ -62,6 +69,7 @@ describe("thinking visibility while a bash tool is running (#8611)", () => {
 		toggleThinkingBlockVisibility.call(fakeThis);
 
 		expect(fakeThis.settingsManager.setHideThinkingBlock).toHaveBeenCalledWith(true);
+		expect(assistant.setHideThinkingBlock).toHaveBeenCalledWith(true);
 		expect(chatContainer.children).toContain(component);
 		expect(renderChat(chatContainer)).toContain("first");
 	});

@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
+import type { AssistantFoldAssignment } from "./assistant-fold-region.ts";
 import { createMarkdownTransform } from "./markdown-transform.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
@@ -50,6 +51,7 @@ export class AssistantMessageComponent extends Container {
 	private markdownTransformers: readonly MarkdownTransformer[];
 	private lastMessage?: AssistantMessage;
 	private isStreaming = false;
+	private thinkingFoldAssignments = new Map<number, AssistantFoldAssignment>();
 	private thinkingVisibilityOverrides = new Map<number, boolean>();
 
 	constructor(
@@ -106,6 +108,24 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
+	setThinkingFoldAssignments(assignments: ReadonlyMap<number, AssistantFoldAssignment>): void {
+		this.thinkingFoldAssignments = new Map(assignments);
+		if (this.lastMessage) this.updateContent(this.lastMessage);
+	}
+
+	refreshFoldState(): void {
+		if (this.lastMessage) this.updateContent(this.lastMessage);
+	}
+
+	rendersWithFoldState(): boolean {
+		const message = this.lastMessage;
+		if (!message) return false;
+		if (this.hasVisibleContentFrom(message, 0)) return true;
+		if (message.stopReason === "length") return true;
+		const hasToolCalls = message.content.some((content) => content.type === "toolCall");
+		return !hasToolCalls && (message.stopReason === "aborted" || message.stopReason === "error");
+	}
+
 	getThinkingVisibilityOverrides(): ReadonlyMap<number, boolean> {
 		return new Map(this.thinkingVisibilityOverrides);
 	}
@@ -128,6 +148,27 @@ export class AssistantMessageComponent extends Container {
 		return lines;
 	}
 
+	private hasVisibleContentFrom(message: AssistantMessage, startIndex: number): boolean {
+		for (let index = startIndex; index < message.content.length; index += 1) {
+			const content = message.content[index];
+			if (content.type === "text" && content.text.trim()) return true;
+			if (content.type !== "thinking") continue;
+
+			const firstThinkingContentIndex = index;
+			let hasThinking = false;
+			for (; index < message.content.length; index += 1) {
+				const thinking = message.content[index];
+				if (thinking.type !== "thinking") break;
+				if (thinking.thinking.trim()) hasThinking = true;
+			}
+			index -= 1;
+			if (!hasThinking) continue;
+			const assignment = this.thinkingFoldAssignments.get(firstThinkingContentIndex);
+			if (!assignment || assignment.showSummary || assignment.region.isExpanded()) return true;
+		}
+		return false;
+	}
+
 	updateContent(message: AssistantMessage, isStreaming = this.isStreaming): void {
 		this.lastMessage = message;
 		this.isStreaming = isStreaming;
@@ -135,9 +176,7 @@ export class AssistantMessageComponent extends Container {
 		// Clear content container
 		this.contentContainer.clear();
 
-		const hasVisibleContent = message.content.some(
-			(c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()),
-		);
+		const hasVisibleContent = this.hasVisibleContentFrom(message, 0);
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall");
 		const addAssistantContent = (content: Component) => {
 			this.contentContainer.addChild(new SemanticPromptSegment(content));
@@ -173,15 +212,17 @@ export class AssistantMessageComponent extends Container {
 				}
 				i--;
 
-				if (thinkingBlocks.length === 0) {
-					continue;
+				if (thinkingBlocks.length === 0) continue;
+
+				const foldAssignment = this.thinkingFoldAssignments.get(firstThinkingContentIndex);
+				if (foldAssignment?.showSummary) {
+					this.contentContainer.addChild(foldAssignment.region.getSummaryComponent());
 				}
+				if (foldAssignment && !foldAssignment.region.isExpanded()) continue;
 
 				// Add spacing only when another visible assistant content block follows.
 				// This avoids a superfluous blank line before separately-rendered tool execution blocks.
-				const hasVisibleContentAfter = message.content
-					.slice(i + 1)
-					.some((c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()));
+				const hasVisibleContentAfter = this.hasVisibleContentFrom(message, i + 1);
 
 				const hidden = this.thinkingVisibilityOverrides.get(firstThinkingContentIndex) ?? this.hideThinkingBlock;
 				const thinkingComponent = hidden
