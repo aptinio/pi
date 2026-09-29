@@ -37,6 +37,13 @@ type CompletionOptions = {
 	restoredExpansion?: ReadonlyMap<string, boolean>;
 };
 
+function formatFoldTimestamp(timestamp: number | undefined): string | undefined {
+	if (typeof timestamp !== "number" || !Number.isFinite(timestamp)) return undefined;
+	const date = new Date(timestamp);
+	const hour = date.getHours() % 12 || 12;
+	return `${hour}:${date.getMinutes().toString().padStart(2, "0")}`;
+}
+
 function isSameHiddenItem(left: HiddenItem, right: HiddenItem): boolean {
 	if (left.kind !== right.kind || left.group !== right.group) return false;
 	if (left.kind === "thinking" && right.kind === "thinking") return left.contentIndex === right.contentIndex;
@@ -104,7 +111,9 @@ class AssistantHiddenRegion implements AssistantFoldRegionView {
 		if (this.analysis.hasError) details.push("error");
 		else if (this.analysis.hasIncompleteTool) details.push("incomplete");
 		const marker = this.expanded ? "[-]" : "[+]";
-		this.summaryText.setText(theme.fg("muted", `${marker} ${details.join(", ")}`));
+		const summary = `${marker} ${details.join(", ")}`;
+		const timestamp = formatFoldTimestamp(this.getAnchorGroup().getMessage().timestamp);
+		this.summaryText.setText(theme.fg("muted", timestamp ? `${timestamp}  ${summary}` : summary));
 	}
 }
 
