@@ -149,7 +149,7 @@ import { createChatViewport } from "./chat-viewport.ts";
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { AssistantTranscriptGroup } from "./components/assistant-transcript-group.ts";
-import { AssistantTurn } from "./components/assistant-turn.ts";
+import { AssistantTurn, type AssistantTurnHeightCompensation } from "./components/assistant-turn.ts";
 import { BashExecutionComponent, type BashExecutionSnapshot } from "./components/bash-execution.ts";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.ts";
@@ -335,6 +335,9 @@ type TransientToolState = {
 type TransientTranscriptState = {
 	streamingMessage?: AssistantMessage;
 	streamingThinking?: ReadonlyMap<number, boolean>;
+	assistantHeightCompensation?: AssistantTurnHeightCompensation;
+	deferredAssistantPrefixFold?: boolean;
+	deferredAssistantPrefixFoldFollowingEnd?: boolean;
 	liveTools: Map<string, TransientToolState>;
 	bash?: { snapshot: BashExecutionSnapshot; pendingIndex: number };
 };
@@ -564,6 +567,11 @@ export class InteractiveMode {
 	private readonly assistantTurns = new Set<AssistantTurn>();
 	private readonly entriesRenderedByBoundaryCompaction = new Set<string>();
 	private streamingMessage: AssistantMessage | undefined = undefined;
+	private deferredAssistantPrefixFold = false;
+	private restoringDeferredAssistantPrefixFoldHeight = false;
+	private restoringPersistedDeferredAssistantPrefixFold = false;
+	private suppressDeferredAssistantPrefixFoldMeasurement = false;
+	private readonly assistantToolGroups = new Map<string, AssistantTranscriptGroup>();
 	private readonly persistedEntryIdsByMessage = new WeakMap<object, string>();
 	private readonly renderedEntriesByMessage = new WeakMap<object, TranscriptEntryComponent>();
 	private pendingBashEntryComponents: TranscriptEntryComponent[] = [];
@@ -1035,14 +1043,22 @@ export class InteractiveMode {
 		this.options.tuiMode = mode;
 		this.mountInteractiveTui(nextUi, components);
 		if (startRenderer) {
-			this.rebuildTranscript({
-				viewState: mode === "fullscreen" ? this.savedTranscriptViewState : undefined,
-				populateHistory: false,
-			});
+			this.suppressDeferredAssistantPrefixFoldMeasurement = previousUi.mode === "regular" && mode === "fullscreen";
+			try {
+				this.rebuildTranscript({
+					viewState: mode === "fullscreen" ? this.savedTranscriptViewState : undefined,
+					populateHistory: false,
+				});
+			} finally {
+				this.suppressDeferredAssistantPrefixFoldMeasurement = false;
+			}
 		}
 		nextUi.invalidate();
 		nextUi.setFocus(focus);
-		if (!startRenderer) return true;
+		if (!startRenderer) {
+			if (mode === "regular") this.activeAssistantTurn?.clearHeightCompensation();
+			return true;
+		}
 		nextUi.start();
 		this.themeController.rebindTui();
 		this.rebindExtensionTerminalInputListeners();
@@ -2421,6 +2437,8 @@ export class InteractiveMode {
 		if (!preservePresentationState) this.liveTools.clear();
 		this.pendingBashEntryComponents = [];
 		this.restoringExpansionState = expansionState;
+		this.restoringPersistedDeferredAssistantPrefixFold =
+			transientState.streamingMessage === undefined && transientState.deferredAssistantPrefixFold === true;
 		this.renderInitialMessages({ collapseCompletedActivity: !preservePresentationState });
 		if (transientState.streamingMessage) {
 			this.addStreamingAssistant(transientState.streamingMessage, transientState.streamingThinking);
@@ -3679,6 +3697,9 @@ export class InteractiveMode {
 								usage: event.entry.usage,
 							});
 						}
+						this.restoringPersistedDeferredAssistantPrefixFold =
+							transientState.streamingMessage === undefined &&
+							transientState.deferredAssistantPrefixFold === true;
 						this.renderSessionEntries(retainedEntries.filter((entry) => entriesAfterCompaction.has(entry.id)));
 						if (transientState.streamingMessage) {
 							this.addStreamingAssistant(transientState.streamingMessage, transientState.streamingThinking);
@@ -3709,7 +3730,11 @@ export class InteractiveMode {
 					this.addMessageToChat(event.message);
 					this.ui.requestRender();
 				} else if (event.message.role === "user") {
+					this.activeAssistantTurn?.clearHeightCompensation();
 					this.activeAssistantTurn = undefined;
+					this.deferredAssistantPrefixFold = false;
+					this.restoringDeferredAssistantPrefixFoldHeight = false;
+					this.restoringPersistedDeferredAssistantPrefixFold = false;
 					this.addMessageToChat(event.message);
 					this.updatePendingMessagesDisplay();
 					this.ui.requestRender();
@@ -3723,6 +3748,7 @@ export class InteractiveMode {
 				if (this.streamingComponent && this.streamingGroup && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
 					this.streamingGroup.setMessage(this.streamingMessage, true);
+					this.registerAssistantToolGroups(this.streamingGroup);
 					this.renderedEntriesByMessage.set(event.message, this.streamingGroup);
 
 					for (const content of this.streamingMessage.content) {
@@ -3741,6 +3767,10 @@ export class InteractiveMode {
 							}
 						}
 					}
+					if (this.deferredAssistantPrefixFold && this.streamingGroup.rendersWithFoldState()) {
+						this.deferredAssistantPrefixFold = false;
+						this.foldActiveAssistantPrefix();
+					}
 					this.ui.requestRender();
 				}
 				break;
@@ -3750,7 +3780,12 @@ export class InteractiveMode {
 				if (this.streamingComponent && this.streamingGroup && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
 					this.streamingGroup.setMessage(this.streamingMessage, false);
+					this.registerAssistantToolGroups(this.streamingGroup);
 					this.renderedEntriesByMessage.set(event.message, this.streamingGroup);
+					if (this.deferredAssistantPrefixFold && this.streamingGroup.rendersWithFoldState()) {
+						this.deferredAssistantPrefixFold = false;
+						this.foldActiveAssistantPrefix();
+					}
 					let errorMessage: string | undefined;
 					if (this.streamingMessage.stopReason === "aborted") {
 						const retryAttempt = this.session.retryAttempt;
@@ -3783,9 +3818,15 @@ export class InteractiveMode {
 						this.maybeShowThinkingDropNotice(this.streamingMessage);
 						this.maybeShowCacheMissNotice(this.streamingMessage);
 					}
+					const awaitingToolExecution =
+						this.deferredAssistantPrefixFold &&
+						this.streamingMessage.stopReason !== "aborted" &&
+						this.streamingMessage.stopReason !== "error" &&
+						this.streamingMessage.content.some((content) => content.type === "toolCall");
 					this.streamingComponent = undefined;
 					this.streamingGroup = undefined;
 					this.streamingMessage = undefined;
+					this.deferredAssistantPrefixFold = awaitingToolExecution;
 					this.footer.invalidate();
 				}
 				this.ui.requestRender();
@@ -3798,19 +3839,34 @@ export class InteractiveMode {
 			case "tool_execution_start": {
 				// Nested calls (from codemode scripts) are shown inside their parent's row.
 				if (event.parentToolCallId) break;
+				const ownerGroup = this.streamingGroup ?? this.assistantToolGroups.get(event.toolCallId);
 				let component = this.pendingTools.get(event.toolCallId);
+				if (!component && ownerGroup) {
+					component = ownerGroup.getTools().find((tool) => tool.getSnapshot().toolCallId === event.toolCallId);
+				}
 				if (!component) {
 					component = this.createToolComponent(event.toolName, event.toolCallId, event.args);
 					component.setExpanded(this.toolOutputExpanded);
-					if (this.streamingGroup) {
-						this.streamingGroup.addTool(event.toolCallId, component);
+					if (ownerGroup) {
+						ownerGroup.addTool(event.toolCallId, component);
 					} else {
 						this.chatContainer.addChild(this.createTranscriptEntry(undefined, [component]));
 					}
-					this.pendingTools.set(event.toolCallId, component);
-					this.liveTools.set(event.toolCallId, component);
+				}
+				this.pendingTools.set(event.toolCallId, component);
+				this.liveTools.set(event.toolCallId, component);
+				const ownerEntryId = ownerGroup?.getEntryId();
+				const ownerContentIndex = ownerGroup
+					?.getMessage()
+					.content.findIndex((content) => content.type === "toolCall" && content.id === event.toolCallId);
+				if (ownerEntryId && ownerContentIndex !== undefined && ownerContentIndex >= 0) {
+					this.registerToolComponent(ownerEntryId, ownerContentIndex, event.toolCallId, component, true);
 				}
 				component.markExecutionStarted();
+				if (this.deferredAssistantPrefixFold) {
+					this.deferredAssistantPrefixFold = false;
+					this.foldActiveAssistantPrefix();
+				}
 				this.ui.requestRender();
 				break;
 			}
@@ -3832,6 +3888,7 @@ export class InteractiveMode {
 					this.pendingTools.delete(event.toolCallId);
 					this.ui.requestRender();
 				}
+				this.assistantToolGroups.delete(event.toolCallId);
 				break;
 			}
 
@@ -3850,8 +3907,12 @@ export class InteractiveMode {
 					this.streamingGroup = undefined;
 					this.streamingMessage = undefined;
 				}
+				this.deferredAssistantPrefixFold = false;
+				this.restoringDeferredAssistantPrefixFoldHeight = false;
+				this.restoringPersistedDeferredAssistantPrefixFold = false;
 				this.pendingTools.clear();
 				this.liveTools.clear();
+				this.assistantToolGroups.clear();
 
 				this.ui.requestRender();
 				break;
@@ -3914,6 +3975,9 @@ export class InteractiveMode {
 						this.chatContainer.clear();
 						this.clearTranscriptRegistries();
 						this.restoringExpansionState = expansionState;
+						this.restoringPersistedDeferredAssistantPrefixFold =
+							transientState.streamingMessage === undefined &&
+							transientState.deferredAssistantPrefixFold === true;
 						try {
 							// The latest compaction is prepended for model context; append it below at its chronological position.
 							this.renderSessionEntries(entries.slice(1));
@@ -4087,12 +4151,31 @@ export class InteractiveMode {
 	}
 
 	private addAssistantGroupToTurn(group: AssistantTranscriptGroup): void {
+		this.registerAssistantToolGroups(group);
 		if (!this.activeAssistantTurn) {
 			this.activeAssistantTurn = new AssistantTurn(this.outputPad);
 			this.assistantTurns.add(this.activeAssistantTurn);
 		}
 		this.activeAssistantTurn.addGroup(group);
 		this.chatContainer.addChild(group);
+	}
+
+	private registerAssistantToolGroups(group: AssistantTranscriptGroup): void {
+		for (const content of group.getMessage().content) {
+			if (content.type === "toolCall") this.assistantToolGroups.set(content.id, group);
+		}
+	}
+
+	private restoreActiveAssistantPrefixBeforeDeferredLast(): void {
+		const turn = this.activeAssistantTurn;
+		if (!turn) return;
+		turn.reconcileBoundaries(this.chatContainer.children);
+		const restoredExpansion = this.restoringExpansionState?.assistantRegions;
+		const changed = turn.foldBeforeDeferredLast({
+			defaultExpanded: this.toolOutputExpanded,
+			...(restoredExpansion ? { restoredExpansion } : {}),
+		});
+		if (changed) this.ui.requestRender();
 	}
 
 	private foldActiveAssistantPrefix(): void {
@@ -4106,11 +4189,22 @@ export class InteractiveMode {
 				? this.renderer.captureTranscriptViewState()
 				: undefined;
 		const restoredExpansion = this.restoringExpansionState?.assistantRegions;
+		const measureFoldedHeight = preserveViewport
+			? viewState?.followingEnd === true
+			: this.restoringDeferredAssistantPrefixFoldHeight;
+		const heightCompensationWidth =
+			measureFoldedHeight && this.transcriptScrollView
+				? this.transcriptScrollView.getContentWidth(this.ui.terminal.columns)
+				: undefined;
 		const changed = turn.foldBeforeLast({
 			defaultExpanded: this.toolOutputExpanded,
 			...(restoredExpansion ? { restoredExpansion } : {}),
+			...(heightCompensationWidth ? { heightCompensationWidth } : {}),
 		});
 		if (!changed) return;
+		if (!preserveViewport && heightCompensationWidth !== undefined) {
+			this.restoringDeferredAssistantPrefixFoldHeight = false;
+		}
 
 		if (viewState?.viewportAnchor) {
 			const redirectEntryId = turn.getFoldedEntryRedirect(viewState.viewportAnchor.entryId);
@@ -4148,6 +4242,8 @@ export class InteractiveMode {
 					defaultExpanded: this.toolOutputExpanded,
 					restoredExpansion: this.restoringExpansionState.assistantRegions,
 				});
+			} else {
+				turn.clearHeightCompensation();
 			}
 		}
 		this.activeAssistantTurn = undefined;
@@ -4252,6 +4348,14 @@ export class InteractiveMode {
 			? this.pendingBashEntryComponents.findIndex((entry) => entry.children.includes(activeBash))
 			: -1;
 		const bashEntry = bashPendingIndex >= 0 ? this.pendingBashEntryComponents[bashPendingIndex] : undefined;
+		const assistantHeightCompensation = this.isFullscreen()
+			? this.activeAssistantTurn?.getHeightCompensation()
+			: undefined;
+		const deferredAssistantPrefixFoldFollowingEnd =
+			!this.suppressDeferredAssistantPrefixFoldMeasurement &&
+			this.isFullscreen() &&
+			this.deferredAssistantPrefixFold &&
+			this.transcriptScrollView?.isFollowingEnd === true;
 		return {
 			...(this.streamingMessage && !this.streamingGroup?.getEntryId()
 				? {
@@ -4259,6 +4363,9 @@ export class InteractiveMode {
 						streamingThinking: this.streamingComponent?.getThinkingVisibilityOverrides(),
 					}
 				: {}),
+			...(assistantHeightCompensation ? { assistantHeightCompensation } : {}),
+			...(this.deferredAssistantPrefixFold ? { deferredAssistantPrefixFold: true } : {}),
+			...(deferredAssistantPrefixFoldFollowingEnd ? { deferredAssistantPrefixFoldFollowingEnd } : {}),
 			liveTools: new Map(
 				Array.from(this.liveTools, ([id, component]) => [
 					id,
@@ -4285,6 +4392,10 @@ export class InteractiveMode {
 		this.pendingTools.clear();
 		this.streamingComponent = undefined;
 		this.streamingGroup = undefined;
+		this.deferredAssistantPrefixFold = false;
+		this.restoringDeferredAssistantPrefixFoldHeight = false;
+		this.restoringPersistedDeferredAssistantPrefixFold = false;
+		this.assistantToolGroups.clear();
 	}
 
 	private createToolComponent(toolName: string, toolCallId: string, args: unknown): ToolExecutionComponent {
@@ -4344,6 +4455,7 @@ export class InteractiveMode {
 	}
 
 	private restoreTransientTranscriptState(state: TransientTranscriptState): void {
+		this.restoringDeferredAssistantPrefixFoldHeight = state.deferredAssistantPrefixFoldFollowingEnd === true;
 		for (const [toolCallId, toolState] of state.liveTools) {
 			const persisted = toolState.stateKey ? this.toolComponents.get(toolState.stateKey) : undefined;
 			if (persisted) {
@@ -4377,6 +4489,15 @@ export class InteractiveMode {
 			this.bashComponent = component;
 			this.chatContainer.addChild(entry);
 		}
+		if (this.isFullscreen() && state.assistantHeightCompensation) {
+			this.activeAssistantTurn?.restoreHeightCompensation(state.assistantHeightCompensation);
+		}
+		if (state.deferredAssistantPrefixFold) this.deferredAssistantPrefixFold = true;
+		const replacement = this.activeAssistantTurn?.getLastGroup();
+		if (state.streamingMessage && this.deferredAssistantPrefixFold && replacement?.rendersWithFoldState()) {
+			this.deferredAssistantPrefixFold = false;
+			this.foldActiveAssistantPrefix();
+		}
 	}
 
 	private rebuildTranscript(options: { viewState?: TranscriptViewState; populateHistory?: boolean } = {}): void {
@@ -4388,6 +4509,8 @@ export class InteractiveMode {
 		this.chatContainer.clear();
 		this.clearTranscriptRegistries();
 		this.restoringExpansionState = expansionState;
+		this.restoringPersistedDeferredAssistantPrefixFold =
+			transientState.streamingMessage === undefined && transientState.deferredAssistantPrefixFold === true;
 		this.renderSessionEntries(this.getVisibleTranscriptEntries(), { populateHistory: options.populateHistory });
 		if (transientState.streamingMessage) {
 			this.addStreamingAssistant(transientState.streamingMessage, transientState.streamingThinking);
@@ -4562,7 +4685,8 @@ export class InteractiveMode {
 		this.streamingMessage = message;
 		this.renderedEntriesByMessage.set(message, group);
 		this.addAssistantGroupToTurn(group);
-		this.foldActiveAssistantPrefix();
+		this.deferredAssistantPrefixFold = !group.rendersWithFoldState();
+		if (!this.deferredAssistantPrefixFold) this.foldActiveAssistantPrefix();
 		return group;
 	}
 
@@ -4666,7 +4790,19 @@ export class InteractiveMode {
 				collapseCompletedActivity: options.collapseCompletedActivity,
 			});
 		} else if (this.restoringExpansionState) {
-			this.foldActiveAssistantPrefix();
+			if (this.restoringPersistedDeferredAssistantPrefixFold) {
+				this.restoringPersistedDeferredAssistantPrefixFold = false;
+				this.deferredAssistantPrefixFold = true;
+				this.restoreActiveAssistantPrefixBeforeDeferredLast();
+			} else {
+				const replacement = this.activeAssistantTurn?.getLastGroup();
+				this.deferredAssistantPrefixFold = false;
+				if (replacement && !replacement.rendersWithFoldState()) {
+					this.restoreActiveAssistantPrefixBeforeDeferredLast();
+				} else {
+					this.foldActiveAssistantPrefix();
+				}
+			}
 		}
 		this.ui.requestRender();
 	}
