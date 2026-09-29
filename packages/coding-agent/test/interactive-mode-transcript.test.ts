@@ -5,11 +5,16 @@ import type { UserBashEventResult } from "../src/core/extensions/index.ts";
 import type { SessionEntry } from "../src/core/session-manager.ts";
 import type { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import { AssistantTranscriptGroup } from "../src/modes/interactive/components/assistant-transcript-group.ts";
+import { AssistantTurn } from "../src/modes/interactive/components/assistant-turn.ts";
 import {
 	BashExecutionComponent,
 	type BashExecutionSnapshot,
 } from "../src/modes/interactive/components/bash-execution.ts";
-import type { ToolExecutionComponent, ToolExpansionState } from "../src/modes/interactive/components/tool-execution.ts";
+import type {
+	ToolExecutionComponent,
+	ToolExecutionSnapshot,
+	ToolExpansionState,
+} from "../src/modes/interactive/components/tool-execution.ts";
 import { TranscriptEntryComponent } from "../src/modes/interactive/components/transcript-entry.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -216,6 +221,7 @@ describe("InteractiveMode transcript projection", () => {
 			assistantTurns: new Set(),
 			outputPad: 1,
 			chatContainer: new Container(),
+			registerAssistantToolGroups: vi.fn(),
 		};
 		const addAssistantGroupToTurn = Reflect.get(InteractiveMode.prototype, "addAssistantGroupToTurn") as (
 			this: typeof fakeThis,
@@ -243,6 +249,7 @@ describe("InteractiveMode transcript projection", () => {
 			streamingComponent: undefined,
 			streamingGroup: undefined,
 			streamingMessage: undefined,
+			deferredAssistantPrefixFold: false,
 			renderedEntriesByMessage: new WeakMap<object, AssistantTranscriptGroup>(),
 			addAssistantGroupToTurn: vi.fn(),
 			foldActiveAssistantPrefix: vi.fn(),
@@ -259,9 +266,461 @@ describe("InteractiveMode transcript projection", () => {
 
 		expect(fakeThis.addAssistantGroupToTurn).toHaveBeenCalledWith(group);
 		expect(fakeThis.foldActiveAssistantPrefix).toHaveBeenCalledOnce();
+		expect(fakeThis.deferredAssistantPrefixFold).toBe(false);
 		expect(fakeThis.addAssistantGroupToTurn.mock.invocationCallOrder[0]).toBeLessThan(
 			fakeThis.foldActiveAssistantPrefix.mock.invocationCallOrder[0]!,
 		);
+	});
+
+	test.each([
+		["thinking", [{ type: "thinking", thinking: "continuing" }] as AssistantMessage["content"]],
+		["tool call", [{ type: "toolCall", id: "tool-1", name: "read", arguments: {} }] as AssistantMessage["content"]],
+	])("waits to fold completed activity until an empty continuation shows %s content", async (_, content) => {
+		const toolComponent = {
+			setExpanded: vi.fn(),
+			updateArgs: vi.fn(),
+		} as unknown as ToolExecutionComponent;
+		const fakeThis = {
+			isInitialized: true,
+			footer: { invalidate: vi.fn() },
+			persistedEntryIdsByMessage: new WeakMap<object, string>(),
+			hideThinkingBlock: false,
+			getMarkdownThemeWithSettings: () => ({}),
+			hiddenThinkingLabel: "Thinking",
+			outputPad: 1,
+			getMarkdownTransformers: () => [],
+			streamingComponent: undefined as AssistantMessageComponent | undefined,
+			streamingGroup: undefined as AssistantTranscriptGroup | undefined,
+			streamingMessage: undefined as AssistantMessage | undefined,
+			deferredAssistantPrefixFold: false,
+			renderedEntriesByMessage: new WeakMap<object, AssistantTranscriptGroup>(),
+			addAssistantGroupToTurn: vi.fn(),
+			registerAssistantToolGroups: vi.fn(),
+			foldActiveAssistantPrefix: vi.fn(),
+			pendingTools: new Map<string, ToolExecutionComponent>(),
+			liveTools: new Map<string, ToolExecutionComponent>(),
+			toolOutputExpanded: false,
+			createToolComponent: vi.fn(() => toolComponent),
+			ui: { requestRender: vi.fn() },
+		};
+		const addStreamingAssistant = Reflect.get(InteractiveMode.prototype, "addStreamingAssistant") as (
+			this: typeof fakeThis,
+			message: AssistantMessage,
+		) => AssistantTranscriptGroup;
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof fakeThis,
+			event: { type: "message_update"; message: AssistantMessage },
+		) => Promise<void>;
+
+		addStreamingAssistant.call(fakeThis, assistantMessage([]));
+
+		expect(fakeThis.foldActiveAssistantPrefix).not.toHaveBeenCalled();
+		expect(fakeThis.deferredAssistantPrefixFold).toBe(true);
+
+		await handleEvent.call(fakeThis, {
+			type: "message_update",
+			message: assistantMessage(content),
+		});
+
+		expect(fakeThis.foldActiveAssistantPrefix).toHaveBeenCalledOnce();
+		expect(fakeThis.deferredAssistantPrefixFold).toBe(false);
+		if (content.some((item) => item.type === "toolCall")) {
+			expect(fakeThis.createToolComponent).toHaveBeenCalledOnce();
+			expect(fakeThis.createToolComponent.mock.invocationCallOrder[0]).toBeLessThan(
+				fakeThis.foldActiveAssistantPrefix.mock.invocationCallOrder[0]!,
+			);
+		}
+	});
+
+	test("keeps a final-only tool continuation deferred until the tool row mounts", async () => {
+		const toolComponent = {
+			setExpanded: vi.fn(),
+			markExecutionStarted: vi.fn(),
+			getSnapshot: () => ({ toolCallId: "tool-1" }),
+		} as unknown as ToolExecutionComponent;
+		const assistantToolGroups = new Map<string, AssistantTranscriptGroup>();
+		const registerAssistantToolGroups = vi.fn((group: AssistantTranscriptGroup) => {
+			for (const content of group.getMessage().content) {
+				if (content.type === "toolCall") assistantToolGroups.set(content.id, group);
+			}
+		});
+		const fakeThis = {
+			isInitialized: true,
+			footer: { invalidate: vi.fn() },
+			persistedEntryIdsByMessage: new WeakMap<object, string>(),
+			hideThinkingBlock: false,
+			getMarkdownThemeWithSettings: () => ({}),
+			hiddenThinkingLabel: "Thinking",
+			outputPad: 1,
+			getMarkdownTransformers: () => [],
+			streamingComponent: undefined as AssistantMessageComponent | undefined,
+			streamingGroup: undefined as AssistantTranscriptGroup | undefined,
+			streamingMessage: undefined as AssistantMessage | undefined,
+			deferredAssistantPrefixFold: false,
+			assistantToolGroups,
+			renderedEntriesByMessage: new WeakMap<object, AssistantTranscriptGroup>(),
+			addAssistantGroupToTurn: vi.fn(),
+			registerAssistantToolGroups,
+			foldActiveAssistantPrefix: vi.fn(),
+			pendingTools: new Map<string, ToolExecutionComponent>(),
+			liveTools: new Map<string, ToolExecutionComponent>(),
+			toolOutputExpanded: false,
+			createToolComponent: vi.fn(() => toolComponent),
+			createTranscriptEntry: vi.fn(() => new TranscriptEntryComponent(undefined, [])),
+			chatContainer: { addChild: vi.fn() },
+			session: { retryAttempt: 0 },
+			maybeSuggestBugReport: vi.fn(),
+			maybeShowThinkingDropNotice: vi.fn(),
+			maybeShowCacheMissNotice: vi.fn(),
+			registerToolComponent: vi.fn(),
+			ui: { requestRender: vi.fn() },
+		};
+		const addStreamingAssistant = Reflect.get(InteractiveMode.prototype, "addStreamingAssistant") as (
+			this: typeof fakeThis,
+			message: AssistantMessage,
+		) => AssistantTranscriptGroup;
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof fakeThis,
+			event:
+				| { type: "message_end"; message: AssistantMessage }
+				| { type: "tool_execution_start"; toolCallId: string; toolName: string; args: unknown },
+		) => Promise<void>;
+		const finalMessage = assistantMessage([
+			{ type: "toolCall", id: "tool-1", name: "read", arguments: { path: "file.txt" } },
+		]);
+
+		const group = addStreamingAssistant.call(fakeThis, assistantMessage([]));
+		await handleEvent.call(fakeThis, { type: "message_end", message: finalMessage });
+		group.setEntryId("assistant-1");
+
+		expect(fakeThis.foldActiveAssistantPrefix).not.toHaveBeenCalled();
+		expect(fakeThis.deferredAssistantPrefixFold).toBe(true);
+		expect(assistantToolGroups.get("tool-1")).toBe(group);
+
+		await handleEvent.call(fakeThis, {
+			type: "tool_execution_start",
+			toolCallId: "tool-1",
+			toolName: "read",
+			args: { path: "file.txt" },
+		});
+
+		expect(fakeThis.createToolComponent).toHaveBeenCalledOnce();
+		expect(group.getTools()).toContain(toolComponent);
+		expect(fakeThis.registerToolComponent).toHaveBeenCalledWith("assistant-1", 0, "tool-1", toolComponent, true);
+		expect(fakeThis.createTranscriptEntry).not.toHaveBeenCalled();
+		expect(fakeThis.chatContainer.addChild).not.toHaveBeenCalled();
+		expect(fakeThis.foldActiveAssistantPrefix).toHaveBeenCalledOnce();
+		expect(fakeThis.deferredAssistantPrefixFold).toBe(false);
+		expect(fakeThis.createToolComponent.mock.invocationCallOrder[0]).toBeLessThan(
+			fakeThis.foldActiveAssistantPrefix.mock.invocationCallOrder[0]!,
+		);
+	});
+
+	test("captures active fold compensation for fullscreen transcript reconstruction", () => {
+		const compensation = { rows: 7, width: 100, groupOffsetFromEnd: 1 };
+		const fakeThis = {
+			toolComponents: new Map(),
+			bashComponent: undefined,
+			pendingBashEntryComponents: [] as TranscriptEntryComponent[],
+			streamingMessage: undefined,
+			streamingGroup: undefined,
+			streamingComponent: undefined,
+			activeAssistantTurn: { getHeightCompensation: vi.fn(() => compensation) },
+			isFullscreen: () => true,
+			deferredAssistantPrefixFold: true,
+			suppressDeferredAssistantPrefixFoldMeasurement: false,
+			transcriptScrollView: { isFollowingEnd: true },
+			liveTools: new Map(),
+			pendingTools: new Map(),
+			chatContainer: { children: [] as Component[] },
+		};
+		const captureTransientTranscriptState = Reflect.get(
+			InteractiveMode.prototype,
+			"captureTransientTranscriptState",
+		) as (this: typeof fakeThis) => {
+			assistantHeightCompensation?: typeof compensation;
+			deferredAssistantPrefixFold?: boolean;
+			deferredAssistantPrefixFoldFollowingEnd?: boolean;
+		};
+
+		const state = captureTransientTranscriptState.call(fakeThis);
+
+		expect(state.assistantHeightCompensation).toEqual(compensation);
+		expect(state.deferredAssistantPrefixFold).toBe(true);
+		expect(state.deferredAssistantPrefixFoldFollowingEnd).toBe(true);
+
+		fakeThis.transcriptScrollView.isFollowingEnd = false;
+		const scrolledState = captureTransientTranscriptState.call(fakeThis);
+		expect(scrolledState.deferredAssistantPrefixFold).toBe(true);
+		expect(scrolledState.deferredAssistantPrefixFoldFollowingEnd).toBeUndefined();
+
+		fakeThis.transcriptScrollView.isFollowingEnd = true;
+		fakeThis.suppressDeferredAssistantPrefixFoldMeasurement = true;
+		const enteringFullscreenState = captureTransientTranscriptState.call(fakeThis);
+		expect(enteringFullscreenState.deferredAssistantPrefixFold).toBe(true);
+		expect(enteringFullscreenState.deferredAssistantPrefixFoldFollowingEnd).toBeUndefined();
+	});
+
+	test("does not carry fold compensation into regular transcript reconstruction", () => {
+		const getHeightCompensation = vi.fn(() => ({ rows: 7, width: 100, groupOffsetFromEnd: 0 }));
+		const fakeThis = {
+			toolComponents: new Map(),
+			bashComponent: undefined,
+			pendingBashEntryComponents: [] as TranscriptEntryComponent[],
+			streamingMessage: undefined,
+			streamingGroup: undefined,
+			streamingComponent: undefined,
+			activeAssistantTurn: { getHeightCompensation },
+			isFullscreen: () => false,
+			liveTools: new Map(),
+			pendingTools: new Map(),
+			chatContainer: { children: [] as Component[] },
+		};
+		const captureTransientTranscriptState = Reflect.get(
+			InteractiveMode.prototype,
+			"captureTransientTranscriptState",
+		) as (this: typeof fakeThis) => { assistantHeightCompensation?: unknown };
+
+		const state = captureTransientTranscriptState.call(fakeThis);
+
+		expect(getHeightCompensation).not.toHaveBeenCalled();
+		expect(state.assistantHeightCompensation).toBeUndefined();
+	});
+
+	test("flushes a deferred fold after transcript rebuild remounts a live tool", () => {
+		const snapshot = {
+			toolName: "read",
+			toolCallId: "tool-1",
+			args: { path: "file.txt" },
+		} as ToolExecutionSnapshot;
+		const restoreSnapshot = vi.fn();
+		const restoreHeightCompensation = vi.fn();
+		const toolComponent = {
+			restoreSnapshot,
+		} as unknown as ToolExecutionComponent;
+		let lastGroup: AssistantTranscriptGroup | undefined;
+		const fakeThis = {
+			persistedEntryIdsByMessage: new WeakMap<object, string>(),
+			isFullscreen: () => true,
+			hideThinkingBlock: false,
+			getMarkdownThemeWithSettings: () => ({}),
+			hiddenThinkingLabel: "Thinking",
+			outputPad: 1,
+			getMarkdownTransformers: () => [],
+			streamingComponent: undefined as AssistantMessageComponent | undefined,
+			streamingGroup: undefined as AssistantTranscriptGroup | undefined,
+			streamingMessage: undefined as AssistantMessage | undefined,
+			deferredAssistantPrefixFold: false,
+			renderedEntriesByMessage: new WeakMap<object, AssistantTranscriptGroup>(),
+			addAssistantGroupToTurn: vi.fn(),
+			foldActiveAssistantPrefix: vi.fn(),
+			toolComponents: new Map<string, ToolExecutionComponent>(),
+			pendingTools: new Map<string, ToolExecutionComponent>(),
+			liveTools: new Map<string, ToolExecutionComponent>(),
+			createToolComponent: vi.fn(() => toolComponent),
+			activeAssistantTurn: {
+				getHeightCompensation: () => undefined,
+				getLastGroup: () => lastGroup,
+				restoreHeightCompensation,
+			},
+		};
+		const addStreamingAssistant = Reflect.get(InteractiveMode.prototype, "addStreamingAssistant") as (
+			this: typeof fakeThis,
+			message: AssistantMessage,
+		) => AssistantTranscriptGroup;
+		const restoreTransientTranscriptState = Reflect.get(
+			InteractiveMode.prototype,
+			"restoreTransientTranscriptState",
+		) as (
+			this: typeof fakeThis,
+			state: {
+				streamingMessage: AssistantMessage;
+				assistantHeightCompensation: { rows: number; width: number; groupOffsetFromEnd: number };
+				deferredAssistantPrefixFold: boolean;
+				deferredAssistantPrefixFoldFollowingEnd: boolean;
+				liveTools: Map<string, { pending: boolean; snapshot: ToolExecutionSnapshot }>;
+			},
+		) => void;
+		const streamingMessage = assistantMessage([
+			{ type: "toolCall", id: "tool-1", name: "read", arguments: { path: "file.txt" } },
+		]);
+
+		lastGroup = addStreamingAssistant.call(fakeThis, streamingMessage);
+		restoreTransientTranscriptState.call(fakeThis, {
+			streamingMessage,
+			assistantHeightCompensation: { rows: 7, width: 100, groupOffsetFromEnd: 1 },
+			deferredAssistantPrefixFold: true,
+			deferredAssistantPrefixFoldFollowingEnd: true,
+			liveTools: new Map([["tool-1", { pending: true, snapshot }]]),
+		});
+
+		expect(restoreSnapshot).toHaveBeenCalledWith(snapshot);
+		expect(fakeThis.foldActiveAssistantPrefix).toHaveBeenCalledOnce();
+		expect(fakeThis.deferredAssistantPrefixFold).toBe(false);
+		expect(restoreHeightCompensation).toHaveBeenCalledWith({ rows: 7, width: 100, groupOffsetFromEnd: 1 });
+		expect(restoreSnapshot.mock.invocationCallOrder[0]).toBeLessThan(
+			restoreHeightCompensation.mock.invocationCallOrder[0]!,
+		);
+		expect(restoreHeightCompensation.mock.invocationCallOrder[0]).toBeLessThan(
+			fakeThis.foldActiveAssistantPrefix.mock.invocationCallOrder[0]!,
+		);
+	});
+
+	test("keeps a persisted final-only fold pending until tool execution starts", () => {
+		const foldActiveAssistantPrefix = vi.fn();
+		const fakeThis = {
+			isFullscreen: () => true,
+			liveTools: new Map(),
+			toolComponents: new Map(),
+			pendingTools: new Map(),
+			streamingGroup: undefined,
+			streamingMessage: undefined,
+			bashComponent: undefined,
+			pendingBashEntryComponents: [] as TranscriptEntryComponent[],
+			deferredAssistantPrefixFold: false,
+			activeAssistantTurn: {
+				getLastGroup: () => ({ rendersWithFoldState: () => true }),
+				restoreHeightCompensation: vi.fn(),
+			},
+			foldActiveAssistantPrefix,
+		};
+		const restoreTransientTranscriptState = Reflect.get(
+			InteractiveMode.prototype,
+			"restoreTransientTranscriptState",
+		) as (
+			this: typeof fakeThis,
+			state: {
+				deferredAssistantPrefixFold: boolean;
+				liveTools: Map<string, never>;
+			},
+		) => void;
+
+		restoreTransientTranscriptState.call(fakeThis, {
+			deferredAssistantPrefixFold: true,
+			liveTools: new Map<string, never>(),
+		});
+
+		expect(fakeThis.deferredAssistantPrefixFold).toBe(true);
+		expect(foldActiveAssistantPrefix).not.toHaveBeenCalled();
+	});
+
+	test("rebases restored compensation after remounted tool output", () => {
+		const snapshot = {
+			toolName: "read",
+			toolCallId: "tool-1",
+			args: { path: "file.txt" },
+		} as ToolExecutionSnapshot;
+		const restoredTool = new Text("", 0, 0) as Text & {
+			restoreSnapshot(snapshot: ToolExecutionSnapshot): void;
+		};
+		restoredTool.restoreSnapshot = () => restoredTool.setText("restored line one\nrestored line two");
+		const turn = new AssistantTurn(1);
+		const fakeThis = {
+			persistedEntryIdsByMessage: new WeakMap<object, string>(),
+			isFullscreen: () => true,
+			hideThinkingBlock: false,
+			getMarkdownThemeWithSettings: () => ({}),
+			hiddenThinkingLabel: "Thinking",
+			outputPad: 1,
+			getMarkdownTransformers: () => [],
+			streamingComponent: undefined as AssistantMessageComponent | undefined,
+			streamingGroup: undefined as AssistantTranscriptGroup | undefined,
+			streamingMessage: undefined as AssistantMessage | undefined,
+			deferredAssistantPrefixFold: false,
+			renderedEntriesByMessage: new WeakMap<object, AssistantTranscriptGroup>(),
+			addAssistantGroupToTurn: (group: AssistantTranscriptGroup) => turn.addGroup(group),
+			foldActiveAssistantPrefix: vi.fn(),
+			toolComponents: new Map<string, ToolExecutionComponent>(),
+			pendingTools: new Map<string, ToolExecutionComponent>(),
+			liveTools: new Map<string, ToolExecutionComponent>(),
+			createToolComponent: vi.fn(() => restoredTool as unknown as ToolExecutionComponent),
+			activeAssistantTurn: turn,
+		};
+		const addStreamingAssistant = Reflect.get(InteractiveMode.prototype, "addStreamingAssistant") as (
+			this: typeof fakeThis,
+			message: AssistantMessage,
+		) => AssistantTranscriptGroup;
+		const restoreTransientTranscriptState = Reflect.get(
+			InteractiveMode.prototype,
+			"restoreTransientTranscriptState",
+		) as (
+			this: typeof fakeThis,
+			state: {
+				streamingMessage: AssistantMessage;
+				assistantHeightCompensation: { rows: number; width: number; groupOffsetFromEnd: number };
+				liveTools: Map<string, { pending: boolean; snapshot: ToolExecutionSnapshot }>;
+			},
+		) => void;
+		const streamingMessage = assistantMessage([
+			{ type: "toolCall", id: "tool-1", name: "read", arguments: { path: "file.txt" } },
+		]);
+
+		const lastGroup = addStreamingAssistant.call(fakeThis, streamingMessage);
+		restoreTransientTranscriptState.call(fakeThis, {
+			streamingMessage,
+			assistantHeightCompensation: { rows: 5, width: 100, groupOffsetFromEnd: 0 },
+			liveTools: new Map([["tool-1", { pending: true, snapshot }]]),
+		});
+
+		expect(lastGroup.render(100).findIndex((line) => line !== "")).toBe(5);
+	});
+
+	test("does not restore fold compensation in regular transcript mode", () => {
+		const restoreHeightCompensation = vi.fn();
+		const fakeThis = {
+			isFullscreen: () => false,
+			liveTools: new Map(),
+			toolComponents: new Map(),
+			pendingTools: new Map(),
+			streamingGroup: undefined,
+			streamingMessage: undefined,
+			bashComponent: undefined,
+			pendingBashEntryComponents: [] as TranscriptEntryComponent[],
+			deferredAssistantPrefixFold: false,
+			activeAssistantTurn: { getLastGroup: () => undefined, restoreHeightCompensation },
+		};
+		const restoreTransientTranscriptState = Reflect.get(
+			InteractiveMode.prototype,
+			"restoreTransientTranscriptState",
+		) as (
+			this: typeof fakeThis,
+			state: {
+				assistantHeightCompensation: { rows: number; width: number; groupOffsetFromEnd: number };
+				liveTools: Map<string, never>;
+			},
+		) => void;
+
+		restoreTransientTranscriptState.call(fakeThis, {
+			assistantHeightCompensation: { rows: 7, width: 100, groupOffsetFromEnd: 0 },
+			liveTools: new Map<string, never>(),
+		});
+
+		expect(restoreHeightCompensation).not.toHaveBeenCalled();
+	});
+
+	test("clears temporary fold compensation at a streaming turn boundary", () => {
+		const turn = {
+			getStateKeys: () => ["assistant-1"],
+			reconcileBoundaries: vi.fn(),
+			complete: vi.fn(),
+			clearHeightCompensation: vi.fn(),
+		};
+		const fakeThis = {
+			activeAssistantTurn: turn,
+			chatContainer: { children: [] as Component[] },
+			toolOutputExpanded: false,
+			session: { isStreaming: true },
+			restoringExpansionState: undefined,
+		};
+		const completeActiveAssistantTurn = Reflect.get(InteractiveMode.prototype, "completeActiveAssistantTurn") as (
+			this: typeof fakeThis,
+		) => void;
+
+		completeActiveAssistantTurn.call(fakeThis);
+
+		expect(turn.clearHeightCompensation).toHaveBeenCalledOnce();
+		expect(turn.complete).not.toHaveBeenCalled();
+		expect(fakeThis.activeAssistantTurn).toBeUndefined();
 	});
 
 	test("collapses completed turns during cold session replay", () => {
@@ -426,6 +885,7 @@ describe("InteractiveMode transcript projection", () => {
 			streamingMessage: undefined,
 			streamingGroup: undefined,
 			streamingComponent: undefined,
+			isFullscreen: () => false,
 			createToolComponent: vi.fn(),
 		};
 		const capture = Reflect.get(InteractiveMode.prototype, "captureTransientTranscriptState") as (
@@ -501,6 +961,57 @@ describe("InteractiveMode transcript projection", () => {
 		expect([...fakeThis.pendingTools.keys()]).toEqual(["current-id"]);
 	});
 
+	test("replays only prior folds before a persisted deferred replacement", () => {
+		const restoreActiveAssistantPrefixBeforeDeferredLast = vi.fn();
+		const fakeThis = {
+			settingsManager: { getShowCacheMissNotices: () => false },
+			sessionManager: { getEntries: () => [] },
+			session: { isStreaming: true },
+			restoringExpansionState: { assistantRegions: new Map() },
+			restoringPersistedDeferredAssistantPrefixFold: true,
+			deferredAssistantPrefixFold: false,
+			restoreActiveAssistantPrefixBeforeDeferredLast,
+			ui: { requestRender: vi.fn() },
+		};
+		const renderTranscriptItems = Reflect.get(InteractiveMode.prototype, "renderTranscriptItems") as (
+			this: typeof fakeThis,
+			items: readonly TranscriptItem[],
+		) => void;
+
+		renderTranscriptItems.call(fakeThis, []);
+
+		expect(fakeThis.restoringPersistedDeferredAssistantPrefixFold).toBe(false);
+		expect(fakeThis.deferredAssistantPrefixFold).toBe(true);
+		expect(restoreActiveAssistantPrefixBeforeDeferredLast).toHaveBeenCalledOnce();
+	});
+
+	test("replays prior folds before an empty final assistant group", () => {
+		const restoreActiveAssistantPrefixBeforeDeferredLast = vi.fn();
+		const foldActiveAssistantPrefix = vi.fn();
+		const fakeThis = {
+			settingsManager: { getShowCacheMissNotices: () => false },
+			sessionManager: { getEntries: () => [] },
+			session: { isStreaming: true },
+			restoringExpansionState: { assistantRegions: new Map() },
+			restoringPersistedDeferredAssistantPrefixFold: false,
+			deferredAssistantPrefixFold: true,
+			activeAssistantTurn: { getLastGroup: () => ({ rendersWithFoldState: () => false }) },
+			restoreActiveAssistantPrefixBeforeDeferredLast,
+			foldActiveAssistantPrefix,
+			ui: { requestRender: vi.fn() },
+		};
+		const renderTranscriptItems = Reflect.get(InteractiveMode.prototype, "renderTranscriptItems") as (
+			this: typeof fakeThis,
+			items: readonly TranscriptItem[],
+		) => void;
+
+		renderTranscriptItems.call(fakeThis, []);
+
+		expect(fakeThis.deferredAssistantPrefixFold).toBe(false);
+		expect(restoreActiveAssistantPrefixBeforeDeferredLast).toHaveBeenCalledOnce();
+		expect(foldActiveAssistantPrefix).not.toHaveBeenCalled();
+	});
+
 	test("uses a replayed user message as a turn boundary", () => {
 		const completeActiveAssistantTurn = vi.fn();
 		const addMessageToChat = vi.fn();
@@ -528,7 +1039,7 @@ describe("InteractiveMode transcript projection", () => {
 	});
 
 	test("uses a live user message as a turn boundary", async () => {
-		const activeAssistantTurn = {};
+		const activeAssistantTurn = { clearHeightCompensation: vi.fn() };
 		const message = { role: "user" as const, content: "next request", timestamp: 1 };
 		const fakeThis = {
 			isInitialized: true,
@@ -545,6 +1056,7 @@ describe("InteractiveMode transcript projection", () => {
 
 		await handleEvent.call(fakeThis, { type: "message_start", message });
 
+		expect(activeAssistantTurn.clearHeightCompensation).toHaveBeenCalledOnce();
 		expect(fakeThis.activeAssistantTurn).toBeUndefined();
 		expect(fakeThis.addMessageToChat).toHaveBeenCalledWith(message);
 	});
@@ -584,13 +1096,15 @@ describe("InteractiveMode transcript projection", () => {
 			foldBeforeLast: vi.fn(() => true),
 			getFoldedEntryRedirect: vi.fn(() => "assistant-1"),
 		};
+		const transcriptScrollView = { getContentWidth: vi.fn(() => 119) };
 		const fakeThis = {
 			renderer,
+			transcriptScrollView,
 			chatContainer: { children: [] as Component[] },
 			toolOutputExpanded: false,
 			activeAssistantTurn: activeTurn,
 			restoringExpansionState: undefined,
-			ui: { requestRender: vi.fn() },
+			ui: { terminal: { columns: 120 }, requestRender: vi.fn() },
 		};
 		const foldActiveAssistantPrefix = Reflect.get(InteractiveMode.prototype, "foldActiveAssistantPrefix") as (
 			this: typeof fakeThis,
@@ -599,12 +1113,56 @@ describe("InteractiveMode transcript projection", () => {
 		foldActiveAssistantPrefix.call(fakeThis);
 
 		expect(activeTurn.reconcileBoundaries).toHaveBeenCalledWith(fakeThis.chatContainer.children);
+		expect(transcriptScrollView.getContentWidth).not.toHaveBeenCalled();
 		expect(activeTurn.foldBeforeLast).toHaveBeenCalledWith({ defaultExpanded: false });
 		expect(renderer.restoreTranscriptViewState).toHaveBeenCalledWith({
 			...viewState,
 			viewportAnchor: { entryId: "assistant-1", rowOffset: 0 },
 		});
 		expect(fakeThis.ui.requestRender).toHaveBeenCalledOnce();
+	});
+
+	test("preserves folded row height while following the transcript end", () => {
+		const viewState = {
+			sessionId: "session-1",
+			followingEnd: true,
+			followSuppressed: false,
+			viewportAnchor: { entryId: "assistant-2", rowOffset: 0 },
+		};
+		const renderer = {
+			[Symbol.for("@earendil-works/pi-tui/viewport")]: true,
+			captureTranscriptViewState: vi.fn(() => viewState),
+			restoreTranscriptViewState: vi.fn(),
+		};
+		const transcriptScrollView = {
+			getContentWidth: vi.fn(() => 119),
+		};
+		const activeTurn = {
+			reconcileBoundaries: vi.fn(),
+			foldBeforeLast: vi.fn(() => true),
+			getFoldedEntryRedirect: vi.fn(),
+		};
+		const fakeThis = {
+			renderer,
+			transcriptScrollView,
+			chatContainer: { children: [] as Component[] },
+			toolOutputExpanded: false,
+			activeAssistantTurn: activeTurn,
+			restoringExpansionState: undefined,
+			ui: { terminal: { columns: 120 }, requestRender: vi.fn() },
+		};
+		const foldActiveAssistantPrefix = Reflect.get(InteractiveMode.prototype, "foldActiveAssistantPrefix") as (
+			this: typeof fakeThis,
+		) => void;
+
+		foldActiveAssistantPrefix.call(fakeThis);
+
+		expect(transcriptScrollView.getContentWidth).toHaveBeenCalledWith(120);
+		expect(activeTurn.foldBeforeLast).toHaveBeenCalledWith({
+			defaultExpanded: false,
+			heightCompensationWidth: 119,
+		});
+		expect(renderer.restoreTranscriptViewState).toHaveBeenCalledWith(viewState);
 	});
 
 	test("restores provisional region state without restoring an intermediate reconstruction viewport", () => {
@@ -619,11 +1177,17 @@ describe("InteractiveMode transcript projection", () => {
 			foldBeforeLast: vi.fn(() => true),
 			getFoldedEntryRedirect: vi.fn(),
 		};
+		const transcriptScrollView = {
+			isFollowingEnd: true,
+			getContentWidth: vi.fn(() => 119),
+		};
 		const fakeThis = {
 			renderer,
+			transcriptScrollView,
 			chatContainer: { children: [] as Component[] },
 			toolOutputExpanded: false,
 			activeAssistantTurn: activeTurn,
+			restoringDeferredAssistantPrefixFoldHeight: true,
 			restoringExpansionState: {
 				tools: new Map(),
 				thinking: new Map(),
@@ -631,7 +1195,7 @@ describe("InteractiveMode transcript projection", () => {
 				assistantTurns: new Map(),
 				assistantRegions: restoredExpansion,
 			},
-			ui: { requestRender: vi.fn() },
+			ui: { terminal: { columns: 120 }, requestRender: vi.fn() },
 		};
 		const foldActiveAssistantPrefix = Reflect.get(InteractiveMode.prototype, "foldActiveAssistantPrefix") as (
 			this: typeof fakeThis,
@@ -639,12 +1203,59 @@ describe("InteractiveMode transcript projection", () => {
 
 		foldActiveAssistantPrefix.call(fakeThis);
 
+		expect(transcriptScrollView.getContentWidth).toHaveBeenCalledWith(120);
+		expect(activeTurn.foldBeforeLast).toHaveBeenCalledWith({
+			defaultExpanded: false,
+			restoredExpansion,
+			heightCompensationWidth: 119,
+		});
+		expect(renderer.captureTranscriptViewState).not.toHaveBeenCalled();
+		expect(renderer.restoreTranscriptViewState).not.toHaveBeenCalled();
+	});
+
+	test("does not recreate consumed fold compensation during ordinary reconstruction", () => {
+		const restoredExpansion = new Map([["assistant-1:thinking:0", false]]);
+		const renderer = {
+			[Symbol.for("@earendil-works/pi-tui/viewport")]: true,
+			captureTranscriptViewState: vi.fn(),
+			restoreTranscriptViewState: vi.fn(),
+		};
+		const activeTurn = {
+			reconcileBoundaries: vi.fn(),
+			foldBeforeLast: vi.fn(() => true),
+			getFoldedEntryRedirect: vi.fn(),
+		};
+		const transcriptScrollView = {
+			isFollowingEnd: true,
+			getContentWidth: vi.fn(() => 119),
+		};
+		const fakeThis = {
+			renderer,
+			transcriptScrollView,
+			chatContainer: { children: [] as Component[] },
+			toolOutputExpanded: false,
+			activeAssistantTurn: activeTurn,
+			restoringDeferredAssistantPrefixFoldHeight: false,
+			restoringExpansionState: {
+				tools: new Map(),
+				thinking: new Map(),
+				expandable: new Map(),
+				assistantTurns: new Map(),
+				assistantRegions: restoredExpansion,
+			},
+			ui: { terminal: { columns: 120 }, requestRender: vi.fn() },
+		};
+		const foldActiveAssistantPrefix = Reflect.get(InteractiveMode.prototype, "foldActiveAssistantPrefix") as (
+			this: typeof fakeThis,
+		) => void;
+
+		foldActiveAssistantPrefix.call(fakeThis);
+
+		expect(transcriptScrollView.getContentWidth).not.toHaveBeenCalled();
 		expect(activeTurn.foldBeforeLast).toHaveBeenCalledWith({
 			defaultExpanded: false,
 			restoredExpansion,
 		});
-		expect(renderer.captureTranscriptViewState).not.toHaveBeenCalled();
-		expect(renderer.restoreTranscriptViewState).not.toHaveBeenCalled();
 	});
 
 	test("preserves the fullscreen transcript anchor while settling assistant turns", () => {
@@ -840,6 +1451,7 @@ describe("InteractiveMode transcript projection", () => {
 			pendingTools: new Map(),
 			pendingBashEntryComponents,
 			chatContainer,
+			isFullscreen: () => false,
 			ui,
 			createTranscriptEntry: (entryId: string | undefined, children: readonly Component[]) =>
 				new TranscriptEntryComponent(entryId, children),
