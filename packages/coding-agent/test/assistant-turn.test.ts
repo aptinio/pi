@@ -1,5 +1,5 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { Text, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { Container, ScrollView, Spacer, Text, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import { AssistantTranscriptGroup } from "../src/modes/interactive/components/assistant-transcript-group.ts";
@@ -61,6 +61,23 @@ function toolComponent(
 	return component as unknown as ToolExecutionComponent;
 }
 
+function spacedToolComponent(text: string, id: string): ToolExecutionComponent {
+	const component = new Container() as Container & { getSnapshot(): ToolExecutionSnapshot };
+	component.addChild(new Spacer(1));
+	component.addChild(new Text(text, 0, 0));
+	component.getSnapshot = () => ({
+		toolName: "read",
+		toolCallId: id,
+		args: {},
+		expansionState: "collapsed",
+		executionStarted: true,
+		argsComplete: true,
+		isPartial: false,
+		result: { content: [{ type: "text", text }], isError: false },
+	});
+	return component as unknown as ToolExecutionComponent;
+}
+
 function clickEvent(y: number, width: number, height: number): TuiMouseEvent {
 	return {
 		type: "click",
@@ -117,6 +134,246 @@ describe("AssistantTurn", () => {
 		expect(folded).not.toContain("second reasoning");
 		expect(folded).not.toContain("first tool output");
 		expect(folded).not.toContain("second tool output");
+	});
+
+	test("replaces folded rows with blanks that replacement output consumes", () => {
+		const width = 100;
+		const first = assistantGroup(
+			"assistant-1",
+			assistantMessage([{ type: "toolCall", id: "tool-1", name: "read", arguments: {} }]),
+		);
+		first.addTool(
+			"tool-1",
+			toolComponent(Array.from({ length: 12 }, (_, index) => `old output ${index + 1}`).join("\n"), {
+				id: "tool-1",
+			}),
+		);
+		const replacement = assistantGroup(
+			"assistant-2",
+			assistantMessage([{ type: "text", text: "Replacement output." }]),
+		);
+		const turn = new AssistantTurn(1);
+		turn.addGroup(first);
+		const baselineHeight = first.render(width).length;
+		turn.addGroup(replacement);
+		const renderHeight = () => first.render(width).length + replacement.render(width).length;
+
+		expect(
+			turn.foldBeforeLast({
+				defaultExpanded: false,
+				heightCompensationWidth: width,
+			}),
+		).toBe(true);
+		expect(renderHeight()).toBe(baselineHeight);
+		const initialCompensation = turn.getHeightCompensation();
+		expect(initialCompensation?.rows).toBeGreaterThan(1);
+
+		const replacementTool = toolComponent("new output", { id: "tool-2" });
+		replacement.addTool("tool-2", replacementTool);
+		expect(renderHeight()).toBe(baselineHeight);
+		const remainingCompensation = turn.getHeightCompensation();
+		expect(remainingCompensation?.rows).toBe((initialCompensation?.rows ?? 0) - 1);
+
+		(replacementTool as unknown as Text).setText(
+			Array.from({ length: (remainingCompensation?.rows ?? 0) + 2 }, (_, index) => `new output ${index + 1}`).join(
+				"\n",
+			),
+		);
+		expect(turn.getHeightCompensation()).toBeUndefined();
+		expect(renderHeight()).toBe(baselineHeight + 1);
+
+		(replacementTool as unknown as Text).setText("shorter output");
+		expect(turn.getHeightCompensation()).toBeUndefined();
+	});
+
+	test("keeps follow-end scroll position fixed while replacement groups consume the fold budget", () => {
+		const width = 100;
+		const viewportHeight = 8;
+		const document = new Container();
+		const viewport = new ScrollView(document, { follow: "end" });
+		const first = assistantGroup(
+			"assistant-1",
+			assistantMessage([{ type: "toolCall", id: "tool-1", name: "read", arguments: {} }]),
+		);
+		first.addTool(
+			"tool-1",
+			spacedToolComponent(
+				Array.from({ length: 20 }, (_, index) => `first output ${index + 1}`).join("\n"),
+				"tool-1",
+			),
+		);
+		const thinking = assistantGroup(
+			"assistant-2",
+			assistantMessage([{ type: "thinking", thinking: "Replacement reasoning." }]),
+		);
+		const tool = assistantGroup(
+			"assistant-3",
+			assistantMessage([{ type: "toolCall", id: "tool-2", name: "read", arguments: {} }]),
+		);
+		tool.addTool("tool-2", spacedToolComponent("second output one\nsecond output two", "tool-2"));
+		const answer = assistantGroup("assistant-4", assistantMessage([{ type: "text", text: "Replacement answer." }]));
+		const turn = new AssistantTurn(1);
+		const renderViewport = () => {
+			const contentHeight = viewport.render(width).length;
+			viewport.updateLayout(contentHeight, viewportHeight, vi.fn());
+			return contentHeight;
+		};
+		const addGroup = (group: AssistantTranscriptGroup) => {
+			turn.addGroup(group);
+			document.addChild(group);
+		};
+
+		addGroup(first);
+		const baselineHeight = renderViewport();
+		const baselineScrollTop = viewport.scrollTop;
+		expect(baselineScrollTop).toBeGreaterThan(0);
+
+		for (const replacement of [thinking, tool, answer]) {
+			addGroup(replacement);
+			expect(turn.foldBeforeLast({ defaultExpanded: false, heightCompensationWidth: width })).toBe(true);
+			expect(renderViewport()).toBe(baselineHeight);
+			expect(viewport.scrollTop).toBe(baselineScrollTop);
+		}
+	});
+
+	test("clears compensated rows when folded activity is expanded", () => {
+		const width = 100;
+		const first = assistantGroup(
+			"assistant-1",
+			assistantMessage([{ type: "toolCall", id: "tool-1", name: "read", arguments: {} }]),
+		);
+		first.addTool("tool-1", toolComponent("one\ntwo\nthree\nfour", { id: "tool-1" }));
+		const replacement = assistantGroup(
+			"assistant-2",
+			assistantMessage([{ type: "text", text: "Replacement output." }]),
+		);
+		const turn = new AssistantTurn(1);
+		turn.addGroup(first);
+		turn.addGroup(replacement);
+		turn.foldBeforeLast({ defaultExpanded: false, heightCompensationWidth: width });
+		expect(replacement.render(width).findIndex((line) => line !== "")).toBeGreaterThan(0);
+
+		turn.setExpanded(true);
+
+		expect(replacement.render(width)[0]).not.toBe("");
+	});
+
+	test("keeps mouse coordinates aligned below compensated rows", () => {
+		const width = 100;
+		const group = assistantGroup("assistant-1", assistantMessage([{ type: "text", text: "Replacement output." }]));
+		const tool = toolComponent("clickable output", { id: "tool-1" });
+		const handleMouse = vi.fn(() => ({ handled: true }));
+		Object.assign(tool, { handleMouse });
+		group.addTool("tool-1", tool);
+		const assistantHeight = group.assistant.render(width).length;
+		group.setHeightCompensation(3, width);
+		const lines = group.render(width);
+
+		expect(group.handleMouse(clickEvent(1, width, lines.length))).toBeUndefined();
+		expect(handleMouse).not.toHaveBeenCalled();
+		expect(group.handleMouse(clickEvent(3 + assistantHeight, width, lines.length))).toMatchObject({
+			handled: true,
+		});
+		expect(handleMouse).toHaveBeenCalledWith(expect.objectContaining({ y: 0, height: 1 }));
+	});
+
+	test("keeps the remaining blank-row budget across width reflow", () => {
+		const group = assistantGroup(
+			"assistant-1",
+			assistantMessage([
+				{
+					type: "text",
+					text: "Replacement output that wraps onto several rows when the transcript narrows.",
+				},
+			]),
+		);
+		group.setHeightCompensation(5, 100);
+
+		expect(group.render(100).findIndex((line) => line !== "")).toBe(5);
+		group.addTool("tool-1", toolComponent("new output one\nnew output two", { id: "tool-1" }));
+		expect(group.render(20).findIndex((line) => line !== "")).toBe(3);
+		expect(group.getHeightCompensation()).toEqual({ rows: 3, width: 20 });
+	});
+
+	test("restores compensation to the group that originally owned it", () => {
+		const width = 100;
+		const first = assistantGroup("assistant-1", assistantMessage([{ type: "text", text: "First." }]));
+		const second = assistantGroup("assistant-2", assistantMessage([{ type: "text", text: "Second." }]));
+		const third = assistantGroup("assistant-3", assistantMessage([{ type: "text", text: "Third." }]));
+		const turn = new AssistantTurn(1);
+		turn.addGroup(first);
+		turn.addGroup(second);
+		turn.addGroup(third);
+		second.setHeightCompensation(4, width);
+		const compensation = turn.getHeightCompensation();
+		expect(compensation).toEqual({ rows: 4, width, groupOffsetFromEnd: 1 });
+
+		turn.clearHeightCompensation();
+		turn.restoreHeightCompensation(compensation!);
+
+		expect(second.render(width).findIndex((line) => line !== "")).toBe(4);
+		expect(third.render(width)[0]).not.toBe("");
+	});
+
+	test("transfers remaining blank rows without a new measurement and clears them at completion", () => {
+		const width = 100;
+		const first = assistantGroup(
+			"assistant-1",
+			assistantMessage([{ type: "toolCall", id: "tool-1", name: "read", arguments: {} }]),
+		);
+		first.addTool(
+			"tool-1",
+			toolComponent(Array.from({ length: 8 }, (_, index) => `old output ${index + 1}`).join("\n"), {
+				id: "tool-1",
+			}),
+		);
+		const second = assistantGroup("assistant-2", assistantMessage([{ type: "text", text: "First replacement." }]));
+		const third = assistantGroup("assistant-3", assistantMessage([{ type: "text", text: "Second replacement." }]));
+		const turn = new AssistantTurn(1);
+		turn.addGroup(first);
+		turn.addGroup(second);
+		turn.foldBeforeLast({ defaultExpanded: false, heightCompensationWidth: width });
+		const carriedRows = second.render(width).findIndex((line) => line !== "");
+		turn.addGroup(third);
+		const heightBeforeSecondFold =
+			first.render(width).length + second.render(width).length + third.render(width).length;
+
+		expect(turn.foldBeforeLast({ defaultExpanded: false })).toBe(true);
+		expect(first.render(width).length + second.render(width).length + third.render(width).length).toBe(
+			heightBeforeSecondFold,
+		);
+		expect(second.render(width)[0]).not.toBe("");
+		expect(third.render(width).findIndex((line) => line !== "")).toBe(carriedRows);
+
+		turn.complete({ defaultExpanded: false });
+		expect(third.render(width)[0]).not.toBe("");
+	});
+
+	test("replays only folds that preceded a deferred final replacement", () => {
+		const first = assistantGroup(
+			"assistant-1",
+			assistantMessage([{ type: "toolCall", id: "tool-1", name: "read", arguments: {} }]),
+		);
+		first.addTool("tool-1", toolComponent("first hidden output", { id: "tool-1" }));
+		const second = assistantGroup(
+			"assistant-2",
+			assistantMessage([{ type: "toolCall", id: "tool-2", name: "read", arguments: {} }]),
+		);
+		second.addTool("tool-2", toolComponent("pending fold output", { id: "tool-2" }));
+		const deferred = assistantGroup(
+			"assistant-3",
+			assistantMessage([{ type: "toolCall", id: "tool-3", name: "read", arguments: {} }]),
+		);
+		const turn = new AssistantTurn(1);
+		turn.addGroup(first);
+		turn.addGroup(second);
+		turn.addGroup(deferred);
+
+		expect(turn.foldBeforeDeferredLast({ defaultExpanded: false })).toBe(true);
+
+		expect(stripAnsi(first.render(100).join("\n"))).toContain("[+] 1 tool call");
+		expect(stripAnsi(first.render(100).join("\n"))).not.toContain("first hidden output");
+		expect(stripAnsi(second.render(100).join("\n"))).toContain("pending fold output");
 	});
 
 	test("shows the first hidden assistant message timestamp before the fold marker", () => {

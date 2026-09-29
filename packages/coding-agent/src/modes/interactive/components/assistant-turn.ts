@@ -1,7 +1,11 @@
 import { type Component, MouseRegion, Text } from "@earendil-works/pi-tui";
 import { theme } from "../theme/theme.ts";
 import type { AssistantFoldRegionView } from "./assistant-fold-region.ts";
-import type { AssistantTranscriptGroup } from "./assistant-transcript-group.ts";
+import type { AssistantHeightCompensation, AssistantTranscriptGroup } from "./assistant-transcript-group.ts";
+
+export type AssistantTurnHeightCompensation = AssistantHeightCompensation & {
+	groupOffsetFromEnd: number;
+};
 
 type GroupRecord = {
 	group: AssistantTranscriptGroup;
@@ -35,6 +39,10 @@ type RegionAnalysis = {
 type CompletionOptions = {
 	defaultExpanded: boolean;
 	restoredExpansion?: ReadonlyMap<string, boolean>;
+};
+
+type FoldBeforeLastOptions = CompletionOptions & {
+	heightCompensationWidth?: number;
 };
 
 function formatFoldTimestamp(timestamp: number | undefined): string | undefined {
@@ -147,15 +155,42 @@ export class AssistantTurn {
 		return this.groups.length === 0;
 	}
 
-	foldBeforeLast(options: CompletionOptions): boolean {
+	foldBeforeDeferredLast(options: Omit<FoldBeforeLastOptions, "heightCompensationWidth">): boolean {
+		if (this.completed || this.groups.length < 3) return false;
+		return this.rebuildRegions(this.groups.slice(0, -2), options, false);
+	}
+
+	foldBeforeLast(options: FoldBeforeLastOptions): boolean {
 		if (this.completed || this.groups.length < 2) return false;
-		return this.rebuildRegions(this.groups.slice(0, -1), options, false);
+		const carriedCompensation = this.getHeightCompensation();
+		const compensationWidth = options.heightCompensationWidth;
+		const heightBefore = compensationWidth === undefined ? undefined : this.getRenderedHeight(compensationWidth);
+		const changed = this.rebuildRegions(this.groups.slice(0, -1), options, false);
+		if (!changed) return false;
+
+		this.clearHeightCompensation();
+		const replacement = this.groups.at(-1)?.group;
+		if (replacement && heightBefore !== undefined && compensationWidth !== undefined) {
+			const heightAfter = this.getRenderedHeight(compensationWidth);
+			// Replacement rows are already visible, so they consume the new blank-row budget immediately.
+			const replacementHeight = replacement.render(compensationWidth).length;
+			const collapsedRows = Math.max(0, heightBefore - heightAfter - replacementHeight);
+			replacement.setHeightCompensation(collapsedRows, compensationWidth);
+		} else if (replacement && carriedCompensation) {
+			replacement.setHeightCompensation(carriedCompensation.rows, carriedCompensation.width);
+		}
+		return true;
 	}
 
 	complete(options: CompletionOptions): boolean {
 		if (this.completed) return false;
 		this.completed = true;
+		this.clearHeightCompensation();
 		return this.rebuildRegions(this.groups, options, true);
+	}
+
+	getLastGroup(): AssistantTranscriptGroup | undefined {
+		return this.groups.at(-1)?.group;
 	}
 
 	getStateKeys(): string[] {
@@ -170,6 +205,26 @@ export class AssistantTurn {
 			stateKeys: region.getStateKeys(),
 			expanded: region.isExpanded(),
 		}));
+	}
+
+	getHeightCompensation(): AssistantTurnHeightCompensation | undefined {
+		for (let index = 0; index < this.groups.length; index += 1) {
+			const compensation = this.groups[index]!.group.getHeightCompensation();
+			if (compensation) {
+				return { ...compensation, groupOffsetFromEnd: this.groups.length - index - 1 };
+			}
+		}
+		return undefined;
+	}
+
+	restoreHeightCompensation(compensation: AssistantTurnHeightCompensation): void {
+		this.clearHeightCompensation();
+		const index = Math.max(0, this.groups.length - compensation.groupOffsetFromEnd - 1);
+		this.groups[index]?.group.setHeightCompensation(compensation.rows, compensation.width);
+	}
+
+	clearHeightCompensation(): void {
+		for (const { group } of this.groups) group.clearHeightCompensation();
 	}
 
 	isCompleted(): boolean {
@@ -187,7 +242,12 @@ export class AssistantTurn {
 	setExpanded(expanded: boolean): void {
 		if (this.regions.length === 0) return;
 		for (const region of this.regions) region.setExpanded(expanded, false);
+		this.clearHeightCompensation();
 		this.refreshFoldState();
+	}
+
+	private getRenderedHeight(width: number): number {
+		return this.groups.reduce((height, { group }) => height + group.render(width).length, 0);
 	}
 
 	private rebuildRegions(
@@ -219,11 +279,16 @@ export class AssistantTurn {
 				this.outputPad,
 				analysis,
 				restored ?? previous?.isExpanded() ?? defaultExpanded,
-				() => this.refreshFoldState(),
+				() => this.handleRegionExpansionChange(),
 			);
 		});
 		this.applyAssignments();
 		return analyses.length > 0 || hadRegions;
+	}
+
+	private handleRegionExpansionChange(): void {
+		this.clearHeightCompensation();
+		this.refreshFoldState();
 	}
 
 	private refreshFoldState(): void {
