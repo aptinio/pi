@@ -46,6 +46,7 @@ type RenderSessionContextThis = {
 	streamingMessage?: AssistantMessage;
 	activeAssistantTurn?: AssistantTurn;
 	assistantTurns: Set<AssistantTurn>;
+	assistantToolGroups: Map<string, AssistantTranscriptGroup>;
 	chatContainer: Container;
 	footer: { invalidate(): void };
 	ui: TUI;
@@ -101,6 +102,7 @@ type RenderSessionContextThis = {
 	): void;
 	getToolStateKey(assistantEntryId: string, contentIndex: number, toolCallId: string): string;
 	createToolComponent(toolName: string, toolCallId: string, args: unknown): ToolExecutionComponent;
+	registerAssistantToolGroups(group: AssistantTranscriptGroup): void;
 	addAssistantGroupToTurn(group: AssistantTranscriptGroup): void;
 	completeActiveAssistantTurn(): void;
 	addMessageToChat(
@@ -137,6 +139,7 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 		streamingMessage: undefined,
 		activeAssistantTurn: undefined,
 		assistantTurns: new Set<AssistantTurn>(),
+		assistantToolGroups: new Map<string, AssistantTranscriptGroup>(),
 		chatContainer,
 		footer: { invalidate: vi.fn() },
 		ui: { requestRender: vi.fn() } as unknown as TUI,
@@ -184,6 +187,7 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 		registerToolComponent: RenderSessionContextThis["registerToolComponent"];
 		getToolStateKey: RenderSessionContextThis["getToolStateKey"];
 		createToolComponent: RenderSessionContextThis["createToolComponent"];
+		registerAssistantToolGroups: RenderSessionContextThis["registerAssistantToolGroups"];
 		addAssistantGroupToTurn: RenderSessionContextThis["addAssistantGroupToTurn"];
 		completeActiveAssistantTurn: RenderSessionContextThis["completeActiveAssistantTurn"];
 		addMessageToChat: AddMessageToChat;
@@ -195,6 +199,7 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 	context.registerToolComponent = prototype.registerToolComponent;
 	context.getToolStateKey = prototype.getToolStateKey;
 	context.createToolComponent = prototype.createToolComponent;
+	context.registerAssistantToolGroups = prototype.registerAssistantToolGroups;
 	context.addAssistantGroupToTurn = prototype.addAssistantGroupToTurn;
 	context.completeActiveAssistantTurn = prototype.completeActiveAssistantTurn;
 	context.addMessageToChat = (message, options) => prototype.addMessageToChat.call(context, message, options);
