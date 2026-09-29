@@ -11,9 +11,12 @@ import type {
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
+const foldTimestamp = new Date(2026, 0, 1, 13, 5).getTime();
+
 function assistantMessage(
 	content: AssistantMessage["content"],
 	stopReason: AssistantMessage["stopReason"] = "stop",
+	timestamp = foldTimestamp,
 ): AssistantMessage {
 	return {
 		role: "assistant",
@@ -30,7 +33,7 @@ function assistantMessage(
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason,
-		timestamp: 1,
+		timestamp,
 	};
 }
 
@@ -114,6 +117,89 @@ describe("AssistantTurn", () => {
 		expect(folded).not.toContain("second reasoning");
 		expect(folded).not.toContain("first tool output");
 		expect(folded).not.toContain("second tool output");
+	});
+
+	test("shows the first hidden assistant message timestamp before the fold marker", () => {
+		const first = assistantGroup(
+			"assistant-1",
+			assistantMessage([{ type: "thinking", thinking: "first reasoning" }], "stop", foldTimestamp),
+		);
+		const second = assistantGroup(
+			"assistant-2",
+			assistantMessage(
+				[{ type: "thinking", thinking: "continued reasoning" }],
+				"stop",
+				new Date(2026, 0, 1, 13, 6).getTime(),
+			),
+		);
+		const turn = new AssistantTurn(1);
+		turn.addGroup(first);
+		turn.addGroup(second);
+		turn.complete({ defaultExpanded: false });
+
+		expect(stripAnsi(first.render(100).join("\n"))).toMatch(/(?<!\d)1:05 {2}\[\+\] 2 thinking blocks/);
+
+		turn.setExpanded(true);
+		expect(stripAnsi(first.render(100).join("\n"))).toMatch(/(?<!\d)1:05 {2}\[-\] 2 thinking blocks/);
+	});
+
+	test.each([
+		["midnight", 0],
+		["noon", 12],
+	])("formats %s with hour 12", (_label, hour) => {
+		const group = assistantGroup(
+			"assistant-1",
+			assistantMessage(
+				[{ type: "thinking", thinking: "reasoning" }],
+				"stop",
+				new Date(2026, 0, 1, hour, 7).getTime(),
+			),
+		);
+		const turn = new AssistantTurn(1);
+		turn.addGroup(group);
+		turn.complete({ defaultExpanded: false });
+
+		expect(stripAnsi(group.render(100).join("\n"))).toContain("12:07  [+] 1 thinking block");
+	});
+
+	test("omits the timestamp prefix when a replayed assistant message has no timestamp", () => {
+		const message = assistantMessage([{ type: "thinking", thinking: "legacy reasoning" }]);
+		delete (message as { timestamp?: number }).timestamp;
+		const group = assistantGroup("assistant-1", message);
+		const turn = new AssistantTurn(1);
+		turn.addGroup(group);
+		turn.complete({ defaultExpanded: false });
+
+		const rendered = stripAnsi(group.render(80).join("\n"));
+		expect(rendered).toContain("[+] 1 thinking block");
+		expect(rendered).not.toMatch(/\d{1,2}:\d{2} {2}\[\+\]/);
+		expect(rendered).not.toContain("NaN");
+	});
+
+	test("keeps the first assistant timestamp when a provisional region becomes final", () => {
+		const first = assistantGroup(
+			"assistant-1",
+			assistantMessage([{ type: "thinking", thinking: "first reasoning" }], "stop", foldTimestamp),
+		);
+		const latest = assistantGroup(
+			"assistant-2",
+			assistantMessage(
+				[{ type: "thinking", thinking: "latest reasoning" }],
+				"stop",
+				new Date(2026, 0, 1, 13, 6).getTime(),
+			),
+		);
+		const turn = new AssistantTurn(1);
+		turn.addGroup(first);
+		turn.addGroup(latest);
+
+		turn.foldBeforeLast({ defaultExpanded: false });
+		expect(stripAnsi(first.render(100).join("\n"))).toContain("1:05  [+] 1 thinking block");
+
+		turn.complete({ defaultExpanded: false });
+		const rendered = stripAnsi(first.render(100).join("\n"));
+		expect(rendered).toContain("1:05  [+] 2 thinking blocks");
+		expect(rendered).not.toContain("1:06  [+]");
 	});
 
 	test("folds completed prefix regions while the latest assistant message remains live", () => {
@@ -446,17 +532,16 @@ describe("AssistantTurn", () => {
 			const lines = group.render(80);
 			const rendered = stripAnsi(lines.join("\n"));
 			expect(rendered).toContain(summary);
-			expect(lines.join("\n")).toContain(theme.fg("muted", summary));
-			expect(lines.join("\n")).not.toContain(theme.fg("warning", summary));
+			const fullSummary = `1:05  ${summary}`;
+			expect(lines.join("\n")).toContain(theme.fg("muted", fullSummary));
+			expect(lines.join("\n")).not.toContain(theme.fg("warning", fullSummary));
 		}
 	});
 
 	test("collapses a completed turn with a failed tool result", () => {
 		const summary = "[+] 1 tool call, error";
-		const group = assistantGroup(
-			"assistant-1",
-			assistantMessage([{ type: "toolCall", id: "tool-1", name: "read", arguments: {} }]),
-		);
+		const message = assistantMessage([{ type: "toolCall", id: "tool-1", name: "read", arguments: {} }]);
+		const group = assistantGroup("assistant-1", message);
 		group.addTool("tool-1", toolComponent("failed output", { id: "tool-1", error: true }));
 		const turn = new AssistantTurn(1);
 		turn.addGroup(group);
@@ -466,8 +551,9 @@ describe("AssistantTurn", () => {
 		const rendered = stripAnsi(lines.join("\n"));
 		expect(rendered).toContain(summary);
 		expect(rendered).not.toContain("failed output");
-		expect(lines.join("\n")).toContain(theme.fg("muted", summary));
-		expect(lines.join("\n")).not.toContain(theme.fg("warning", summary));
+		const fullSummary = `1:05  ${summary}`;
+		expect(lines.join("\n")).toContain(theme.fg("muted", fullSummary));
+		expect(lines.join("\n")).not.toContain(theme.fg("warning", fullSummary));
 	});
 
 	test("honors the explicit expansion default for failed turns", () => {
