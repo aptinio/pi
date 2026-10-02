@@ -98,7 +98,7 @@ describe("InteractiveMode transcript projection", () => {
 
 	test("retains presentation state for entries omitted by an intermediate projection", () => {
 		const oldTool = { getExpansionState: () => "expanded" as ToolExpansionState };
-		const newTool = { getExpansionState: () => "preview" as ToolExpansionState };
+		const newTool = { getExpansionState: () => "collapsed" as ToolExpansionState };
 		const fakeThis = {
 			transcriptExpansionState: {
 				tools: new Map<string, ToolExpansionState>(),
@@ -148,7 +148,7 @@ describe("InteractiveMode transcript projection", () => {
 		expect(fakeThis.transcriptExpansionState.tools).toEqual(
 			new Map([
 				["old:0:tool", "expanded"],
-				["new:0:tool", "preview"],
+				["new:0:tool", "collapsed"],
 			]),
 		);
 		expect(fakeThis.transcriptExpansionState.assistantTurns).toEqual(new Map([["old", { completed: true }]]));
@@ -325,7 +325,7 @@ describe("InteractiveMode transcript projection", () => {
 		expect(fakeThis.foldActiveAssistantPrefix).toHaveBeenCalledOnce();
 		expect(fakeThis.deferredAssistantPrefixFold).toBe(false);
 		if (content.some((item) => item.type === "toolCall")) {
-			expect(fakeThis.createToolComponent).toHaveBeenCalledOnce();
+			expect(fakeThis.createToolComponent).toHaveBeenCalledWith("read", "tool-1", {}, 1);
 			expect(fakeThis.createToolComponent.mock.invocationCallOrder[0]).toBeLessThan(
 				fakeThis.foldActiveAssistantPrefix.mock.invocationCallOrder[0]!,
 			);
@@ -404,7 +404,12 @@ describe("InteractiveMode transcript projection", () => {
 			args: { path: "file.txt" },
 		});
 
-		expect(fakeThis.createToolComponent).toHaveBeenCalledOnce();
+		expect(fakeThis.createToolComponent).toHaveBeenCalledWith(
+			"read",
+			"tool-1",
+			{ path: "file.txt" },
+			finalMessage.timestamp,
+		);
 		expect(group.getTools()).toContain(toolComponent);
 		expect(fakeThis.registerToolComponent).toHaveBeenCalledWith("assistant-1", 0, "tool-1", toolComponent, true);
 		expect(fakeThis.createTranscriptEntry).not.toHaveBeenCalled();
@@ -554,6 +559,12 @@ describe("InteractiveMode transcript projection", () => {
 			liveTools: new Map([["tool-1", { pending: true, snapshot }]]),
 		});
 
+		expect(fakeThis.createToolComponent).toHaveBeenCalledWith(
+			"read",
+			"tool-1",
+			snapshot.args,
+			streamingMessage.timestamp,
+		);
 		expect(restoreSnapshot).toHaveBeenCalledWith(snapshot);
 		expect(fakeThis.foldActiveAssistantPrefix).toHaveBeenCalledOnce();
 		expect(fakeThis.deferredAssistantPrefixFold).toBe(false);
@@ -958,6 +969,20 @@ describe("InteractiveMode transcript projection", () => {
 			item("assistant-current", currentMessage),
 		]);
 
+		expect(fakeThis.createToolComponent).toHaveBeenNthCalledWith(
+			1,
+			"read",
+			"reused-id",
+			{ path: "old" },
+			historicalMessage.timestamp,
+		);
+		expect(fakeThis.createToolComponent).toHaveBeenNthCalledWith(
+			2,
+			"read",
+			"current-id",
+			{ path: "current" },
+			currentMessage.timestamp,
+		);
 		expect([...fakeThis.pendingTools.keys()]).toEqual(["current-id"]);
 	});
 

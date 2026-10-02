@@ -9,6 +9,7 @@ import {
 	Text,
 	type TUI,
 	type TuiMouseEvent,
+	truncateToWidth,
 } from "@earendil-works/pi-tui";
 import type { ToolDefinition, ToolRenderContext, ToolRenderers } from "../../../core/extensions/types.ts";
 
@@ -18,6 +19,7 @@ export type { ToolRenderers };
 import { formatToolCallWithArgs, getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
 import { ensurePngTranscoder } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.ts";
+import { formatActivityTimestamp } from "./activity-timestamp.ts";
 import { keyHint } from "./keybinding-hints.ts";
 
 const FALLBACK_PREVIEW_LINES = 10;
@@ -43,6 +45,10 @@ export interface ToolExecutionSnapshot {
 }
 
 export interface ToolExecutionOptions {
+	/** Hide the whole tool row behind a single clickable activity summary. */
+	collapseToSummary?: boolean;
+	/** Timestamp of the assistant message that owns this call, including on replay. */
+	timestamp?: number;
 	showImages?: boolean;
 	imageWidthCells?: number;
 	outputPad?: number;
@@ -81,6 +87,8 @@ export class ToolExecutionComponent extends Container {
 		durationMs?: number;
 	};
 	private hideComponent = false;
+	private readonly collapseToSummary: boolean;
+	private readonly collapsedSummaryRegion: MouseRegion;
 
 	constructor(
 		toolName: string,
@@ -101,6 +109,23 @@ export class ToolExecutionComponent extends Container {
 		this.outputPad = options.outputPad ?? 1;
 		this.ui = ui;
 		this.cwd = cwd;
+		this.collapseToSummary = options.collapseToSummary ?? false;
+		this.collapsedSummaryRegion = new MouseRegion(
+			{
+				render: (width) => {
+					const timestamp = formatActivityTimestamp(options.timestamp);
+					const status = this.result?.isError
+						? ", error"
+						: this.executionStarted && this.isPartial
+							? ", running"
+							: "";
+					const summary = `[+] ${this.toolName}${status}`;
+					return [truncateToWidth(theme.fg("muted", timestamp ? `${timestamp}  ${summary}` : summary), width)];
+				},
+				invalidate: () => {},
+			},
+			(event) => this.handleExpansionClick(event),
+		);
 
 		this.addChild(new Spacer(1));
 
@@ -180,11 +205,15 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private createResultRegion(component: Component): MouseRegion {
-		return new MouseRegion(component, (event) => {
-			if (!this.result || event.type !== "click" || event.button !== "left") return undefined;
-			this.setExpanded(!this.expanded);
-			return { handled: true, preserveViewport: true };
-		});
+		return new MouseRegion(component, (event) => this.handleExpansionClick(event));
+	}
+
+	private handleExpansionClick(event: TuiMouseEvent): { handled: true; preserveViewport: true } | undefined {
+		if ((!this.result && !this.collapseToSummary) || event.type !== "click" || event.button !== "left") {
+			return undefined;
+		}
+		this.setExpanded(!this.expanded);
+		return { handled: true, preserveViewport: true };
 	}
 
 	updateArgs(args: any): void {
@@ -292,6 +321,9 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	override render(width: number): string[] {
+		if (this.collapseToSummary && !this.expanded) {
+			return ["", ...this.collapsedSummaryRegion.render(width)];
+		}
 		if (this.hideComponent) {
 			return [];
 		}
@@ -325,6 +357,22 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
+		if (this.collapseToSummary && !this.expanded) {
+			if (event.y !== 1) return undefined;
+			const result = this.collapsedSummaryRegion.handleMouse({ ...event, y: 0, height: 1 });
+			if (!result?.handled) return undefined;
+			return {
+				...result,
+				handled: true,
+				target: {
+					component: this,
+					originX: event.screenX - event.x,
+					originY: event.screenY - event.y,
+					width: event.width,
+					height: event.height,
+				},
+			};
+		}
 		if (!this.hasRendererDefinition() || this.getRenderShell() !== "self") return super.handleMouse(event);
 		if (event.y <= 0 || event.y > this.selfRenderHeight) return undefined;
 		return this.selfRenderContainer.handleMouse({
