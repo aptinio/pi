@@ -1,5 +1,6 @@
 import { type Component, MouseRegion, Text } from "@earendil-works/pi-tui";
 import { theme } from "../theme/theme.ts";
+import { formatActivityTimestamp } from "./activity-timestamp.ts";
 import type { AssistantFoldRegionView } from "./assistant-fold-region.ts";
 import type { AssistantHeightCompensation, AssistantTranscriptGroup } from "./assistant-transcript-group.ts";
 
@@ -44,13 +45,6 @@ type CompletionOptions = {
 type FoldBeforeLastOptions = CompletionOptions & {
 	heightCompensationWidth?: number;
 };
-
-function formatFoldTimestamp(timestamp: number | undefined): string | undefined {
-	if (typeof timestamp !== "number" || !Number.isFinite(timestamp)) return undefined;
-	const date = new Date(timestamp);
-	const hour = date.getHours() % 12 || 12;
-	return `${hour}:${date.getMinutes().toString().padStart(2, "0")}`;
-}
 
 function isSameHiddenItem(left: HiddenItem, right: HiddenItem): boolean {
 	if (left.kind !== right.kind || left.group !== right.group) return false;
@@ -120,7 +114,7 @@ class AssistantHiddenRegion implements AssistantFoldRegionView {
 		else if (this.analysis.hasIncompleteTool) details.push("incomplete");
 		const marker = this.expanded ? "[-]" : "[+]";
 		const summary = `${marker} ${details.join(", ")}`;
-		const timestamp = formatFoldTimestamp(this.getAnchorGroup().getMessage().timestamp);
+		const timestamp = formatActivityTimestamp(this.getAnchorGroup().getMessage().timestamp);
 		this.summaryText.setText(theme.fg("muted", timestamp ? `${timestamp}  ${summary}` : summary));
 	}
 }

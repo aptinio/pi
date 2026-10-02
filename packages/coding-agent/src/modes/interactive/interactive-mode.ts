@@ -3693,7 +3693,12 @@ export class InteractiveMode {
 					for (const content of this.streamingMessage.content) {
 						if (content.type === "toolCall") {
 							if (!this.pendingTools.has(content.id)) {
-								const component = this.createToolComponent(content.name, content.id, content.arguments);
+								const component = this.createToolComponent(
+									content.name,
+									content.id,
+									content.arguments,
+									this.streamingMessage.timestamp,
+								);
 								component.setExpanded(this.toolOutputExpanded);
 								this.streamingGroup.addTool(content.id, component);
 								this.pendingTools.set(content.id, component);
@@ -3784,7 +3789,12 @@ export class InteractiveMode {
 					component = ownerGroup.getTools().find((tool) => tool.getSnapshot().toolCallId === event.toolCallId);
 				}
 				if (!component) {
-					component = this.createToolComponent(event.toolName, event.toolCallId, event.args);
+					component = this.createToolComponent(
+						event.toolName,
+						event.toolCallId,
+						event.args,
+						ownerGroup?.getMessage().timestamp,
+					);
 					component.setExpanded(this.toolOutputExpanded);
 					if (ownerGroup) {
 						ownerGroup.addTool(event.toolCallId, component);
@@ -4325,12 +4335,19 @@ export class InteractiveMode {
 		this.assistantToolGroups.clear();
 	}
 
-	private createToolComponent(toolName: string, toolCallId: string, args: unknown): ToolExecutionComponent {
+	private createToolComponent(
+		toolName: string,
+		toolCallId: string,
+		args: unknown,
+		timestamp?: number,
+	): ToolExecutionComponent {
 		return new ToolExecutionComponent(
 			toolName,
 			toolCallId,
 			args,
 			{
+				collapseToSummary: toolName === "codemode",
+				timestamp,
 				showImages: this.settingsManager.getShowImages(),
 				imageWidthCells: this.settingsManager.getImageWidthCells(),
 				outputPad: this.outputPad,
@@ -4396,7 +4413,12 @@ export class InteractiveMode {
 			const group = this.streamingGroup;
 			if (!group) continue;
 			const snapshot = toolState.snapshot;
-			const component = this.createToolComponent(snapshot.toolName, snapshot.toolCallId, snapshot.args);
+			const component = this.createToolComponent(
+				snapshot.toolName,
+				snapshot.toolCallId,
+				snapshot.args,
+				group.getMessage().timestamp,
+			);
 			component.restoreSnapshot(snapshot);
 			group.addTool(toolCallId, component);
 			if (toolState.pending) this.pendingTools.set(toolCallId, component);
@@ -4626,7 +4648,12 @@ export class InteractiveMode {
 					const wrapper = this.addMessageToChat(item.message, { entryId: item.entryId });
 					if (!(wrapper instanceof AssistantTranscriptGroup)) break;
 					for (const tool of item.tools) {
-						const component = this.createToolComponent(tool.call.name, tool.call.id, tool.call.arguments);
+						const component = this.createToolComponent(
+							tool.call.name,
+							tool.call.id,
+							tool.call.arguments,
+							item.message.timestamp,
+						);
 						this.registerToolComponent(item.entryId, tool.contentIndex, tool.call.id, component);
 						wrapper.addTool(`${tool.contentIndex}:${tool.call.id}`, component);
 						if (tool.resultEntry) component.updateResult(tool.resultEntry.message);
