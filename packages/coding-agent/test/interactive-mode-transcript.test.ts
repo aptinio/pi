@@ -325,7 +325,7 @@ describe("InteractiveMode transcript projection", () => {
 		expect(fakeThis.foldActiveAssistantPrefix).toHaveBeenCalledOnce();
 		expect(fakeThis.deferredAssistantPrefixFold).toBe(false);
 		if (content.some((item) => item.type === "toolCall")) {
-			expect(fakeThis.createToolComponent).toHaveBeenCalledWith("read", "tool-1", {}, 1);
+			expect(fakeThis.createToolComponent).toHaveBeenCalledWith("read", "tool-1", {});
 			expect(fakeThis.createToolComponent.mock.invocationCallOrder[0]).toBeLessThan(
 				fakeThis.foldActiveAssistantPrefix.mock.invocationCallOrder[0]!,
 			);
@@ -404,12 +404,7 @@ describe("InteractiveMode transcript projection", () => {
 			args: { path: "file.txt" },
 		});
 
-		expect(fakeThis.createToolComponent).toHaveBeenCalledWith(
-			"read",
-			"tool-1",
-			{ path: "file.txt" },
-			finalMessage.timestamp,
-		);
+		expect(fakeThis.createToolComponent).toHaveBeenCalledWith("read", "tool-1", { path: "file.txt" });
 		expect(group.getTools()).toContain(toolComponent);
 		expect(fakeThis.registerToolComponent).toHaveBeenCalledWith("assistant-1", 0, "tool-1", toolComponent, true);
 		expect(fakeThis.createTranscriptEntry).not.toHaveBeenCalled();
@@ -559,12 +554,7 @@ describe("InteractiveMode transcript projection", () => {
 			liveTools: new Map([["tool-1", { pending: true, snapshot }]]),
 		});
 
-		expect(fakeThis.createToolComponent).toHaveBeenCalledWith(
-			"read",
-			"tool-1",
-			snapshot.args,
-			streamingMessage.timestamp,
-		);
+		expect(fakeThis.createToolComponent).toHaveBeenCalledWith("read", "tool-1", snapshot.args);
 		expect(restoreSnapshot).toHaveBeenCalledWith(snapshot);
 		expect(fakeThis.foldActiveAssistantPrefix).toHaveBeenCalledOnce();
 		expect(fakeThis.deferredAssistantPrefixFold).toBe(false);
@@ -591,6 +581,7 @@ describe("InteractiveMode transcript projection", () => {
 			deferredAssistantPrefixFold: false,
 			activeAssistantTurn: {
 				getLastGroup: () => ({ rendersWithFoldState: () => true }),
+				hasActiveCodemode: () => false,
 				restoreHeightCompensation: vi.fn(),
 			},
 			foldActiveAssistantPrefix,
@@ -688,7 +679,11 @@ describe("InteractiveMode transcript projection", () => {
 			bashComponent: undefined,
 			pendingBashEntryComponents: [] as TranscriptEntryComponent[],
 			deferredAssistantPrefixFold: false,
-			activeAssistantTurn: { getLastGroup: () => undefined, restoreHeightCompensation },
+			activeAssistantTurn: {
+				getLastGroup: () => undefined,
+				hasActiveCodemode: () => false,
+				restoreHeightCompensation,
+			},
 		};
 		const restoreTransientTranscriptState = Reflect.get(
 			InteractiveMode.prototype,
@@ -970,20 +965,8 @@ describe("InteractiveMode transcript projection", () => {
 			item("assistant-current", currentMessage),
 		]);
 
-		expect(fakeThis.createToolComponent).toHaveBeenNthCalledWith(
-			1,
-			"read",
-			"reused-id",
-			{ path: "old" },
-			historicalMessage.timestamp,
-		);
-		expect(fakeThis.createToolComponent).toHaveBeenNthCalledWith(
-			2,
-			"read",
-			"current-id",
-			{ path: "current" },
-			currentMessage.timestamp,
-		);
+		expect(fakeThis.createToolComponent).toHaveBeenNthCalledWith(1, "read", "reused-id", { path: "old" });
+		expect(fakeThis.createToolComponent).toHaveBeenNthCalledWith(2, "read", "current-id", { path: "current" });
 		expect([...fakeThis.pendingTools.keys()]).toEqual(["current-id"]);
 	});
 
@@ -1126,6 +1109,7 @@ describe("InteractiveMode transcript projection", () => {
 		};
 		const activeTurn = {
 			reconcileBoundaries: vi.fn(),
+			foldActiveTools: vi.fn(() => false),
 			foldBeforeLast: vi.fn(() => true),
 			getFoldedEntryRedirect: vi.fn(() => "assistant-1"),
 		};
@@ -1172,6 +1156,7 @@ describe("InteractiveMode transcript projection", () => {
 		};
 		const activeTurn = {
 			reconcileBoundaries: vi.fn(),
+			foldActiveTools: vi.fn(() => false),
 			foldBeforeLast: vi.fn(() => true),
 			getFoldedEntryRedirect: vi.fn(),
 		};
@@ -1207,6 +1192,7 @@ describe("InteractiveMode transcript projection", () => {
 		};
 		const activeTurn = {
 			reconcileBoundaries: vi.fn(),
+			foldActiveTools: vi.fn(() => false),
 			foldBeforeLast: vi.fn(() => true),
 			getFoldedEntryRedirect: vi.fn(),
 		};
@@ -1255,6 +1241,7 @@ describe("InteractiveMode transcript projection", () => {
 		};
 		const activeTurn = {
 			reconcileBoundaries: vi.fn(),
+			foldActiveTools: vi.fn(() => false),
 			foldBeforeLast: vi.fn(() => true),
 			getFoldedEntryRedirect: vi.fn(),
 		};
