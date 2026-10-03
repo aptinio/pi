@@ -337,6 +337,7 @@ describe("InteractiveMode transcript projection", () => {
 			liveTools: new Map<string, ToolExecutionComponent>(),
 			toolOutputExpanded: false,
 			createToolComponent: vi.fn(() => toolComponent),
+			programStatus: { handleEvent: vi.fn() },
 			ui: { requestRender: vi.fn() },
 		};
 		const addStreamingAssistant = Reflect.get(InteractiveMode.prototype, "addStreamingAssistant") as (
@@ -394,6 +395,7 @@ describe("InteractiveMode transcript projection", () => {
 			streamingMessage: undefined as AssistantMessage | undefined,
 			deferredAssistantPrefixFold: false,
 			assistantToolGroups,
+			programStatus: { handleEvent: vi.fn() },
 			renderedEntriesByMessage: new WeakMap<object, AssistantTranscriptGroup>(),
 			addAssistantGroupToTurn: vi.fn(),
 			registerAssistantToolGroups,
@@ -1096,6 +1098,7 @@ describe("InteractiveMode transcript projection", () => {
 		const fakeThis = {
 			isInitialized: true,
 			footer: { invalidate: vi.fn() },
+			programStatus: { handleEvent: vi.fn() },
 			activeAssistantTurn,
 			addMessageToChat: vi.fn(),
 			updatePendingMessagesDisplay: vi.fn(),
@@ -1117,6 +1120,7 @@ describe("InteractiveMode transcript projection", () => {
 		const fakeThis = {
 			isInitialized: true,
 			footer: { invalidate: vi.fn() },
+			programStatus: { handleEvent: vi.fn() },
 			settleAssistantTurns: vi.fn(),
 			flushPendingBashComponents: vi.fn(),
 			ui: { requestRender: vi.fn() },

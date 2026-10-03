@@ -4640,7 +4640,12 @@ export class InteractiveMode {
 		let wrapper: TranscriptEntryComponent | undefined;
 		switch (message.role) {
 			case "bashExecution": {
-				const component = new BashExecutionComponent(message.command, this.ui, message.excludeFromContext, this.outputPad);
+				const component = new BashExecutionComponent(
+					message.command,
+					this.ui,
+					message.excludeFromContext,
+					this.outputPad,
+				);
 				if (message.output) component.appendOutput(message.output);
 				component.setComplete(
 					message.exitCode,
@@ -5946,11 +5951,7 @@ export class InteractiveMode {
 							this.editor.setPaddingX(padding);
 						}
 					},
-					onOutputPadChange: (padding) => {
-						this.settingsManager.setOutputPad(padding);
-						this.outputPad = padding;
-						this.rebuildTranscript();
-					},
+					onOutputPadChange: (padding) => this.setOutputPad(padding),
 					onAutocompleteMaxVisibleChange: (maxVisible) => {
 						this.settingsManager.setAutocompleteMaxVisible(maxVisible);
 						this.defaultEditor.setAutocompleteMaxVisible(maxVisible);
@@ -6004,6 +6005,17 @@ export class InteractiveMode {
 			);
 			return { component: selector, focus: selector.getSettingsList() };
 		});
+	}
+
+	private setOutputPad(padding: 0 | 1): void {
+		this.settingsManager.setOutputPad(padding);
+		this.outputPad = padding;
+		for (const wrapper of this.pendingBashComponents) {
+			for (const child of wrapper.children) {
+				if (child instanceof BashExecutionComponent) child.setOutputPad(padding);
+			}
+		}
+		this.rebuildTranscript();
 	}
 
 	private handleThinkingCommand(searchTerm?: string): void {
