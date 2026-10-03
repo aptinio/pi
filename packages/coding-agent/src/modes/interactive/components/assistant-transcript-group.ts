@@ -158,7 +158,11 @@ export class AssistantTranscriptGroup extends TranscriptEntryComponent {
 		for (const [key, tool] of this.tools) {
 			const assignment = this.toolFoldAssignments.get(key);
 			if (assignment?.showSummary) this.addChild(assignment.region.getSummaryComponent());
-			if (!assignment || assignment.region.isExpanded()) this.addChild(tool);
+			if (!assignment || assignment.region.isExpanded()) {
+				// Codemode's shared region reveals its full script and result, not a second preview fold.
+				if (assignment && tool.getSnapshot().toolName === "codemode") tool.setExpanded(true);
+				this.addChild(tool);
+			}
 		}
 		// Missing tool calls have no child to anchor to; analysis only assigns this when the region starts here.
 		if (this.trailingFoldSummary) this.addChild(this.trailingFoldSummary);

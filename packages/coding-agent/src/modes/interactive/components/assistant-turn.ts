@@ -34,6 +34,7 @@ type RegionAnalysis = {
 	thinkingCount: number;
 	toolCount: number;
 	hasError: boolean;
+	hasRunningTool: boolean;
 	hasIncompleteTool: boolean;
 };
 
@@ -111,6 +112,7 @@ class AssistantHiddenRegion implements AssistantFoldRegionView {
 			);
 		}
 		if (this.analysis.hasError) details.push("error");
+		else if (this.analysis.hasRunningTool) details.push("running");
 		else if (this.analysis.hasIncompleteTool) details.push("incomplete");
 		const marker = this.expanded ? "[-]" : "[+]";
 		const summary = `${marker} ${details.join(", ")}`;
@@ -174,6 +176,33 @@ export class AssistantTurn {
 			replacement.setHeightCompensation(carriedCompensation.rows, carriedCompensation.width);
 		}
 		return true;
+	}
+
+	foldActiveTools(options: FoldBeforeLastOptions): boolean {
+		const lastGroup = this.getLastGroup();
+		if (this.completed || !lastGroup || !this.hasActiveCodemode()) return false;
+		const carriedCompensation = this.getHeightCompensation();
+		const width = options.heightCompensationWidth;
+		const heightBefore = width === undefined ? undefined : this.getRenderedHeight(width);
+		const changed = this.rebuildRegions(this.groups, options, false);
+		if (!changed) return false;
+
+		this.clearHeightCompensation();
+		if (heightBefore !== undefined && width !== undefined) {
+			lastGroup.setHeightCompensation(Math.max(0, heightBefore - this.getRenderedHeight(width)), width);
+		} else if (carriedCompensation) {
+			lastGroup.setHeightCompensation(carriedCompensation.rows, carriedCompensation.width);
+		}
+		return true;
+	}
+
+	hasActiveCodemode(): boolean {
+		const group = this.getLastGroup();
+		return (
+			group !== undefined &&
+			group.getTools().length > 0 &&
+			group.getMessage().content.some((content) => content.type === "toolCall" && content.name === "codemode")
+		);
 	}
 
 	complete(options: CompletionOptions): boolean {
@@ -344,6 +373,7 @@ export class AssistantTurn {
 					thinkingCount: 0,
 					toolCount: 0,
 					hasError: false,
+					hasRunningTool: false,
 					hasIncompleteTool: false,
 				};
 				regions.push(current);
@@ -417,6 +447,7 @@ export class AssistantTurn {
 						: {}),
 				});
 				if (snapshot.result?.isError) region.hasError = true;
+				if (!markToolUseIncomplete && snapshot.executionStarted && snapshot.isPartial) region.hasRunningTool = true;
 				if (!snapshot.result || snapshot.isPartial) region.hasIncompleteTool = true;
 				lastGroupRegion = region;
 			}
