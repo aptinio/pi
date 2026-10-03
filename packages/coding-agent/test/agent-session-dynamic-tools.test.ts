@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
+import { Text, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
@@ -9,6 +10,11 @@ import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createBashTool } from "../src/core/tools/bash.ts";
+import { withBuiltInRenderers } from "../src/core/tools/renderers/index.ts";
+import type { ToolRenderContext, ToolRenderers } from "../src/index.ts";
+import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { stripAnsi } from "../src/utils/ansi.ts";
 
 describe("AgentSession dynamic tool registration", () => {
 	let tempDir: string;
@@ -162,6 +168,66 @@ describe("AgentSession dynamic tool registration", () => {
 		expect(session.systemPrompt).toContain("- dynamic_tool: Run dynamic test behavior");
 		expect(session.systemPrompt).toContain("- Use dynamic_tool when the user asks for dynamic behavior tests.");
 
+		session.dispose();
+	});
+
+	it("applies the upstream presentation resolver without changing read execution or tool metadata", async () => {
+		initTheme("dark");
+		writeFileSync(join(tempDir, "notes.txt"), "original read output");
+		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: tempDir,
+			agentDir,
+			settingsManager,
+			extensionFactories: [
+				(pi) => {
+					pi.registerToolRenderer((toolName, next) => {
+						const inherited = next();
+						if (toolName !== "read") return inherited;
+						return {
+							...inherited,
+							renderCall: (_args, _theme, context: ToolRenderContext) =>
+								new Text(`resolver ${context.toolCallId}`, 0, 0),
+						} satisfies ToolRenderers;
+					});
+				},
+			],
+		});
+		await resourceLoader.reload();
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir,
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			settingsManager,
+			sessionManager: SessionManager.inMemory(),
+			resourceLoader,
+		});
+		const definition = session.getToolDefinition("read");
+		const prompt = session.systemPrompt;
+		const tools = session.getAllTools();
+		const renderers = session.extensionRunner.resolveToolRenderers("read", () =>
+			withBuiltInRenderers("read", definition),
+		);
+		const component = new ToolExecutionComponent(
+			"read",
+			"resolver-call",
+			{ path: "notes.txt" },
+			{},
+			renderers,
+			{ requestRender: () => {} } as unknown as TUI,
+			tempDir,
+		);
+		const readTool = session.agent.state.tools.find((tool) => tool.name === "read")!;
+		const result = await readTool.execute("resolver-call", { path: "notes.txt" });
+		component.updateResult({ ...result, isError: false });
+		component.setExpanded(true);
+
+		expect(stripAnsi(component.render(120).join("\n"))).toContain("resolver resolver-call");
+		expect(stripAnsi(component.render(120).join("\n"))).toContain("original read output");
+		expect(result.content).toEqual([{ type: "text", text: "original read output" }]);
+		expect(session.getToolDefinition("read")).toBe(definition);
+		expect(session.getAllTools()).toEqual(tools);
+		expect(session.systemPrompt).toBe(prompt);
 		session.dispose();
 	});
 

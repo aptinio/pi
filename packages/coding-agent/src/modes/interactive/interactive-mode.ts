@@ -4512,7 +4512,12 @@ export class InteractiveMode {
 		let wrapper: TranscriptEntryComponent | undefined;
 		switch (message.role) {
 			case "bashExecution": {
-				const component = new BashExecutionComponent(message.command, this.ui, message.excludeFromContext, this.outputPad);
+				const component = new BashExecutionComponent(
+					message.command,
+					this.ui,
+					message.excludeFromContext,
+					this.outputPad,
+				);
 				if (message.output) component.appendOutput(message.output);
 				component.setComplete(
 					message.exitCode,
@@ -4541,7 +4546,11 @@ export class InteractiveMode {
 				break;
 			}
 			case "compactionSummary": {
-				const component = new CompactionSummaryMessageComponent(message, this.getMarkdownThemeWithSettings(), this.outputPad);
+				const component = new CompactionSummaryMessageComponent(
+					message,
+					this.getMarkdownThemeWithSettings(),
+					this.outputPad,
+				);
 				if (entryId) this.registerExpandableTranscriptComponent(`${entryId}:summary`, component);
 				else component.setExpanded(this.toolOutputExpanded);
 				wrapper = this.createTranscriptEntry(entryId, [new Spacer(1), component]);
@@ -4549,7 +4558,11 @@ export class InteractiveMode {
 				break;
 			}
 			case "branchSummary": {
-				const component = new BranchSummaryMessageComponent(message, this.getMarkdownThemeWithSettings(), this.outputPad);
+				const component = new BranchSummaryMessageComponent(
+					message,
+					this.getMarkdownThemeWithSettings(),
+					this.outputPad,
+				);
 				if (entryId) this.registerExpandableTranscriptComponent(`${entryId}:summary`, component);
 				else component.setExpanded(this.toolOutputExpanded);
 				wrapper = this.createTranscriptEntry(entryId, [new Spacer(1), component]);
@@ -4564,7 +4577,11 @@ export class InteractiveMode {
 				const children: Component[] = this.chatContainer.children.length > 0 ? [new Spacer(1)] : [];
 				const skillBlock = parseSkillBlock(textContent);
 				if (skillBlock) {
-					const skill = new SkillInvocationMessageComponent(skillBlock, this.getMarkdownThemeWithSettings(), this.outputPad);
+					const skill = new SkillInvocationMessageComponent(
+						skillBlock,
+						this.getMarkdownThemeWithSettings(),
+						this.outputPad,
+					);
 					if (entryId) this.registerExpandableTranscriptComponent(`${entryId}:skill`, skill);
 					else skill.setExpanded(this.toolOutputExpanded);
 					children.push(skill);
@@ -5759,11 +5776,7 @@ export class InteractiveMode {
 							this.editor.setPaddingX(padding);
 						}
 					},
-					onOutputPadChange: (padding) => {
-						this.settingsManager.setOutputPad(padding);
-						this.outputPad = padding;
-						this.rebuildTranscript();
-					},
+					onOutputPadChange: (padding) => this.setOutputPad(padding),
 					onAutocompleteMaxVisibleChange: (maxVisible) => {
 						this.settingsManager.setAutocompleteMaxVisible(maxVisible);
 						this.defaultEditor.setAutocompleteMaxVisible(maxVisible);
@@ -5817,6 +5830,17 @@ export class InteractiveMode {
 			);
 			return { component: selector, focus: selector.getSettingsList() };
 		});
+	}
+
+	private setOutputPad(padding: 0 | 1): void {
+		this.settingsManager.setOutputPad(padding);
+		this.outputPad = padding;
+		for (const wrapper of this.pendingBashComponents) {
+			for (const child of wrapper.children) {
+				if (child instanceof BashExecutionComponent) child.setOutputPad(padding);
+			}
+		}
+		this.rebuildTranscript();
 	}
 
 	private handleThinkingCommand(searchTerm?: string): void {
