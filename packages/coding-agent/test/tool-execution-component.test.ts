@@ -604,7 +604,7 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain(theme.fg("toolOutput", error));
 	});
 
-	test("expands a collapsed tool result when clicked", () => {
+	test("toggles directly between collapsed and full tool results when clicked", () => {
 		const component = new ToolExecutionComponent(
 			"read",
 			"tool-click-expand",
@@ -615,7 +615,11 @@ describe("ToolExecutionComponent parity", () => {
 			process.cwd(),
 		);
 		component.updateResult(
-			{ content: [{ type: "text", text: "hidden content" }], details: undefined, isError: false },
+			{
+				content: [{ type: "text", text: Array.from({ length: 30 }, (_, index) => `line-${index + 1}`).join("\n") }],
+				details: undefined,
+				isError: false,
+			},
 			false,
 		);
 		const width = 120;
@@ -637,7 +641,14 @@ describe("ToolExecutionComponent parity", () => {
 			clickCount: 1,
 		};
 		expect(component.handleMouse(event)).toMatchObject({ handled: true, preserveViewport: true });
-		expect(stripAnsi(component.render(width).join("\n"))).toContain("hidden content");
+		expect(component.getExpansionState()).toBe("expanded");
+		expect(stripAnsi(component.render(width).join("\n"))).toContain("line-30");
+		expect(component.handleMouse({ ...event, height: component.render(width).length })).toMatchObject({
+			handled: true,
+			preserveViewport: true,
+		});
+		expect(component.getExpansionState()).toBe("collapsed");
+		expect(stripAnsi(component.render(width).join("\n"))).not.toContain("line-1");
 	});
 
 	test("collapses ordinary read results until expanded", () => {

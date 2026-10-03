@@ -1,12 +1,14 @@
 import { type Component, TuiMainScreen } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";
 import { createEditToolDefinition } from "../src/core/tools/edit.ts";
 import { BashExecutionComponent } from "../src/modes/interactive/components/bash-execution.ts";
 import { CompactionSummaryMessageComponent } from "../src/modes/interactive/components/compaction-summary-message.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
+import { TranscriptEntryComponent } from "../src/modes/interactive/components/transcript-entry.ts";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
@@ -90,5 +92,32 @@ describe("outputPad", () => {
 		expect(lines.filter((line) => line.startsWith(" "))).toEqual([]);
 		component.setOutputPad(1);
 		expect(renderLines(component)).toEqual(lines.map((line) => ` ${line}`));
+	});
+
+	test.each([false, true])("updates a deferred bash block when outputPad changes (complete: %s)", (complete) => {
+		const component = new BashExecutionComponent("pwd", ui, false, 0);
+		component.appendOutput("/tmp");
+		if (complete) component.setComplete(0, false);
+		const lines = renderLines(component).filter((line) => line.includes("$ pwd") || line.includes("/tmp"));
+		const context = {
+			settingsManager: { setOutputPad: vi.fn() },
+			outputPad: 0,
+			pendingBashComponents: [new TranscriptEntryComponent(undefined, [component])],
+			rebuildTranscript: vi.fn(),
+		};
+		const { setOutputPad } = InteractiveMode.prototype as unknown as {
+			setOutputPad(this: typeof context, padding: 0 | 1): void;
+		};
+		try {
+			setOutputPad.call(context, 1);
+			expect(context.settingsManager.setOutputPad).toHaveBeenCalledWith(1);
+			expect(context.outputPad).toBe(1);
+			expect(context.rebuildTranscript).toHaveBeenCalledOnce();
+			expect(renderLines(component).filter((line) => line.includes("$ pwd") || line.includes("/tmp"))).toEqual(
+				lines.map((line) => ` ${line}`),
+			);
+		} finally {
+			component.setComplete(0, false);
+		}
 	});
 });
