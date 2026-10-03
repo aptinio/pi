@@ -189,6 +189,7 @@ export type {
 	ToolLoadout,
 	ToolLoadoutChanges,
 	ToolNamespace,
+	ToolRenderContext,
 	ToolRendererResolver,
 	ToolRenderers,
 	ToolRenderResultOptions,
