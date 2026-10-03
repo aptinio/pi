@@ -10,7 +10,6 @@ import {
 	Text,
 	type TUI,
 	type TuiMouseEvent,
-	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { ToolDefinition, ToolRenderContext, ToolRenderResultOptions } from "../../../core/extensions/types.ts";
@@ -38,7 +37,6 @@ export interface ToolRenderers {
 import { formatToolCallWithArgs, getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
 import { convertToPng } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.ts";
-import { formatActivityTimestamp } from "./activity-timestamp.ts";
 import { keyHint } from "./keybinding-hints.ts";
 
 const FALLBACK_PREVIEW_LINES = 10;
@@ -122,10 +120,6 @@ class LinePreview implements Component {
 }
 
 export interface ToolExecutionOptions {
-	/** Hide the whole tool row behind a single clickable activity summary. */
-	collapseToSummary?: boolean;
-	/** Timestamp of the assistant message that owns this call, including on replay. */
-	timestamp?: number;
 	showImages?: boolean;
 	imageWidthCells?: number;
 }
@@ -165,8 +159,6 @@ export class ToolExecutionComponent extends Container {
 		{ sourceData: string; sourceMimeType: string; data: string; mimeType: string }
 	> = new Map();
 	private hideComponent = false;
-	private readonly collapseToSummary: boolean;
-	private readonly collapsedSummaryRegion: MouseRegion;
 
 	constructor(
 		toolName: string,
@@ -186,23 +178,6 @@ export class ToolExecutionComponent extends Container {
 		this.imageWidthCells = options.imageWidthCells ?? 60;
 		this.ui = ui;
 		this.cwd = cwd;
-		this.collapseToSummary = options.collapseToSummary ?? false;
-		this.collapsedSummaryRegion = new MouseRegion(
-			{
-				render: (width) => {
-					const timestamp = formatActivityTimestamp(options.timestamp);
-					const status = this.result?.isError
-						? ", error"
-						: this.executionStarted && this.isPartial
-							? ", running"
-							: "";
-					const summary = `[+] ${this.toolName}${status}`;
-					return [truncateToWidth(theme.fg("muted", timestamp ? `${timestamp}  ${summary}` : summary), width)];
-				},
-				invalidate: () => {},
-			},
-			(event) => this.handleExpansionClick(event),
-		);
 
 		this.addChild(new Spacer(1));
 
@@ -303,7 +278,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private handleExpansionClick(event: TuiMouseEvent): { handled: true; preserveViewport: true } | undefined {
-		if ((!this.result && !this.collapseToSummary) || event.type !== "click" || event.button !== "left") {
+		if (!this.result || event.type !== "click" || event.button !== "left") {
 			return undefined;
 		}
 		const previewLines = this.getConfiguredPreviewLines();
@@ -459,9 +434,6 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	override render(width: number): string[] {
-		if (this.collapseToSummary && this.expansionState === "collapsed") {
-			return ["", ...this.collapsedSummaryRegion.render(width)];
-		}
 		if (this.hideComponent) {
 			return [];
 		}
@@ -502,22 +474,6 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
-		if (this.collapseToSummary && this.expansionState === "collapsed") {
-			if (event.y !== 1) return undefined;
-			const result = this.collapsedSummaryRegion.handleMouse({ ...event, y: 0, height: 1 });
-			if (!result?.handled) return undefined;
-			return {
-				...result,
-				handled: true,
-				target: {
-					component: this,
-					originX: event.screenX - event.x,
-					originY: event.screenY - event.y,
-					width: event.width,
-					height: event.height,
-				},
-			};
-		}
 		if (!this.hasRendererDefinition() || this.getRenderShell() !== "self") return super.handleMouse(event);
 		if (event.y <= 0 || event.y > this.selfRenderHeight) return undefined;
 		const contentY = event.y - 1;
