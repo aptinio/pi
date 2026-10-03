@@ -1,9 +1,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import {
 	resetCapabilitiesCache,
 	setCapabilities,
+	stripTerminalSequences,
 	type TUI,
 	type TuiMouseEvent,
 	visibleWidth,
@@ -11,10 +13,12 @@ import {
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import { codemodeRenderers } from "../src/extensions/codemode/renderer.ts";
-import type { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
-import { createInteractiveTui, InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
+import { AssistantTranscriptGroup } from "../src/modes/interactive/components/assistant-transcript-group.ts";
+import { AssistantTurn } from "../src/modes/interactive/components/assistant-turn.ts";
+import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
+import { createInteractiveTui } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import { stripAnsi } from "../src/utils/ansi.ts";
 
 const timestamp = new Date(2026, 0, 1, 13, 5).getTime();
 const code = Array.from({ length: 15 }, (_, index) => `text("script-${index}");`).join("\n");
@@ -33,89 +37,106 @@ const result = {
 	details: { calls },
 	isError: false,
 };
+type Fold = { group: AssistantTranscriptGroup; turn: AssistantTurn; tool: ToolExecutionComponent };
 
-describe("codemode activity folding", () => {
+describe("codemode shared activity folding", () => {
 	beforeAll(() => initTheme("dark"));
 	afterEach(() => resetCapabilitiesCache());
 
-	test("starts with a timestamped single line and reveals a running script on click", () => {
-		const component = createToolComponent();
-		component.markExecutionStarted();
-		expect(visibleLines(component)).toEqual(["1:05  [+] codemode, running"]);
-		clickSummary(component);
-		expect(component.getExpansionState()).toBe("expanded");
-		expect(stripAnsi(component.render(120).join("\n"))).toContain('text("script-14");');
+	test("starts with one padded shared summary and reveals the complete running script on click", () => {
+		const fold = createFold();
+		fold.tool.markExecutionStarted();
+		refresh(fold);
+		expect(visibleLines(fold)).toEqual([" 1:05  [+] 1 tool call, running"]);
+		clickSummary(fold);
+		expect(visibleLines(fold).filter((line) => line.includes("[-]"))).toEqual([" 1:05  [-] 1 tool call, running"]);
+		expect(render(fold)).toContain('text("script-14");');
+		expect(render(fold)).not.toContain("[+] codemode");
 	});
 
 	test("keeps partial and final calls/output hidden, then expands without losing content", () => {
-		const component = createToolComponent();
-		component.markExecutionStarted();
-		component.updateResult(result, true);
-		expect(visibleLines(component)).toEqual(["1:05  [+] codemode, running"]);
-		component.updateResult(result);
-		expect(visibleLines(component)).toEqual(["1:05  [+] codemode"]);
-
-		clickSummary(component);
-		const expanded = stripAnsi(component.render(2000).join("\n"));
+		const fold = createFold();
+		fold.tool.markExecutionStarted();
+		fold.tool.updateResult(result, true);
+		refresh(fold);
+		expect(visibleLines(fold)).toEqual([" 1:05  [+] 1 tool call, running"]);
+		fold.tool.updateResult(result);
+		refresh(fold);
+		expect(visibleLines(fold)).toEqual([" 1:05  [+] 1 tool call"]);
+		clickSummary(fold);
+		const expanded = render(fold, 2000);
 		expect(expanded).toContain('text("script-14");');
 		expect(expanded).toContain("nested-0");
 		expect(expanded).toContain("nested-11");
 		expect(expanded).toContain("x".repeat(120));
 		expect(expanded).toContain("output".repeat(200));
-		component.setExpanded(false);
-		expect(visibleLines(component)).toEqual(["1:05  [+] codemode"]);
-		component.setExpanded(true);
-		expect(stripAnsi(component.render(2000).join("\n"))).toContain("output".repeat(200));
+		fold.turn.setExpanded(false);
+		expect(visibleLines(fold)).toEqual([" 1:05  [+] 1 tool call"]);
+		fold.turn.setExpanded(true);
+		expect(render(fold, 2000)).toContain("output".repeat(200));
 	});
 
-	test("shows failure on the summary and reveals the complete error on expansion", () => {
-		const component = createToolComponent();
-		component.updateResult({ content: [{ type: "text", text: "Script error: deliberate failure" }], isError: true });
-		expect(visibleLines(component)).toEqual(["1:05  [+] codemode, error"]);
-		clickSummary(component);
-		expect(stripAnsi(component.render(120).join("\n"))).toContain("Script error: deliberate failure");
+	test("shows failure on the shared summary and reveals the complete error on expansion", () => {
+		const fold = createFold();
+		fold.tool.updateResult({ content: [{ type: "text", text: "Script error: deliberate failure" }], isError: true });
+		refresh(fold);
+		expect(visibleLines(fold)).toEqual([" 1:05  [+] 1 tool call, error"]);
+		clickSummary(fold);
+		expect(render(fold)).toContain("Script error: deliberate failure");
 	});
 
-	test("hides native images until expansion", () => {
+	test("hides native images until the shared region expands", () => {
 		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
-		const component = createToolComponent();
-		component.updateResult({
+		const fold = createFold();
+		fold.tool.updateResult({
 			content: [{ type: "image", data: "fold-image", mimeType: "image/png" }],
 			isError: false,
 		});
-		expect(visibleLines(component)).toEqual(["1:05  [+] codemode"]);
-		component.setExpanded(true);
-		expect(component.render(120).join("\n")).toContain("fold-image");
+		refresh(fold);
+		expect(visibleLines(fold)).toEqual([" 1:05  [+] 1 tool call"]);
+		fold.turn.setExpanded(true);
+		expect(fold.group.render(120).join("\n")).toContain("fold-image");
 	});
 
-	test("retains the message timestamp and expansion state when reconstructed", () => {
-		const component = createToolComponent();
-		component.updateResult(result);
-		const restored = createToolComponent();
-		restored.restoreSnapshot(component.getSnapshot());
-		expect(visibleLines(restored)).toEqual(["1:05  [+] codemode"]);
-		component.setExpanded(true);
-		restored.restoreSnapshot(component.getSnapshot());
-		expect(restored.getExpansionState()).toBe("expanded");
-		expect(stripAnsi(restored.render(120).join("\n"))).toContain("nested-11");
+	test("retains the message timestamp and shared expansion state when reconstructed", () => {
+		const fold = createFold();
+		fold.tool.updateResult(result);
+		refresh(fold);
+		const restored = createFold();
+		restored.tool.restoreSnapshot(fold.tool.getSnapshot());
+		refresh(restored);
+		expect(visibleLines(restored)).toEqual([" 1:05  [+] 1 tool call"]);
+		fold.turn.setExpanded(true);
+		const restoredExpansion = new Map(
+			fold.turn
+				.getRegionExpansionStates()
+				.flatMap((region) => region.stateKeys.map((key) => [key, region.expanded] as const)),
+		);
+		const expandedRestore = createFold(undefined, restoredExpansion);
+		expandedRestore.tool.restoreSnapshot(fold.tool.getSnapshot());
+		refresh(expandedRestore);
+		expect(render(expandedRestore)).toContain(" 1:05  [-] 1 tool call");
+		expect(render(expandedRestore)).toContain("nested-0");
+		expect(render(expandedRestore)).toContain("nested-11");
 	});
 
-	test("expands a running summary through the fullscreen mouse dispatch pipeline", async () => {
+	test("expands a running shared summary through the fullscreen mouse dispatch pipeline", async () => {
 		const logDirectory = mkdtempSync(join(tmpdir(), "pi-codemode-fold-"));
 		const terminal = new VirtualTerminal(120, 30);
 		const ui = createInteractiveTui({ tuiMode: "fullscreen", showHardwareCursor: false, logDirectory, terminal });
-		const component = createToolComponent(ui);
-		component.markExecutionStarted();
-		ui.addChild(component);
+		const fold = createFold(ui);
+		fold.tool.markExecutionStarted();
+		refresh(fold);
+		ui.addChild(fold.group);
 		ui.start();
 		try {
 			await terminal.waitForRender();
-			const y = terminal.getViewport().findIndex((line) => line.includes("1:05  [+] codemode, running"));
+			const y = terminal.getViewport().findIndex((line) => line.includes(" 1:05  [+] 1 tool call, running"));
 			expect(y).toBeGreaterThanOrEqual(0);
 			terminal.sendInput(`\x1b[<0;2;${y + 1}M`);
 			terminal.sendInput(`\x1b[<0;2;${y + 1}m`);
 			await terminal.waitForRender();
-			expect(component.getExpansionState()).toBe("expanded");
+			expect(terminal.getViewport().join("\n")).toContain(" 1:05  [-] 1 tool call, running");
 			expect(terminal.getViewport().join("\n")).toContain('text("script-14");');
 		} finally {
 			ui.stop();
@@ -123,49 +144,61 @@ describe("codemode activity folding", () => {
 		}
 	});
 
-	test("keeps the summary to one visual line at narrow widths", () => {
-		const component = createToolComponent();
-		component.markExecutionStarted();
+	test("keeps the shared summary within narrow terminal widths", () => {
+		const fold = createFold();
+		fold.tool.markExecutionStarted();
+		refresh(fold);
 		for (const width of [10, 20, 40]) {
-			const lines = component.render(width);
-			expect(lines.filter((line) => stripAnsi(line).trim())).toHaveLength(1);
+			const lines = fold.group.render(width);
+			expect(lines.filter((line) => stripTerminalSequences(line).includes("[+]"))).toHaveLength(1);
 			expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
 		}
 	});
 });
 
-function createToolComponent(ui: TUI = { requestRender: () => {} } as unknown as TUI): ToolExecutionComponent {
-	const create = Reflect.get(InteractiveMode.prototype, "createToolComponent") as (
-		this: unknown,
-		name: string,
-		id: string,
-		args: unknown,
-		timestamp: number,
-	) => ToolExecutionComponent;
-	return create.call(
-		{
-			settingsManager: { getShowImages: () => true, getImageWidthCells: () => 60 },
-			getRegisteredToolDefinition: () => codemodeRenderers,
-			ui,
-			sessionManager: { getCwd: () => "/" },
-		},
+function createFold(
+	ui: TUI = { requestRender: () => {} } as unknown as TUI,
+	restoredExpansion?: ReadonlyMap<string, boolean>,
+): Fold {
+	const message = {
+		...fauxAssistantMessage([{ ...fauxToolCall("codemode", { code }), id: "call" }], { stopReason: "toolUse" }),
+		timestamp,
+	};
+	const group = new AssistantTranscriptGroup("assistant-1", message, new AssistantMessageComponent(message));
+	const tool = new ToolExecutionComponent(
 		"codemode",
 		"call",
 		{ code },
-		timestamp,
+		{ showImages: true, imageWidthCells: 60 },
+		codemodeRenderers,
+		ui,
+		"/",
 	);
+	group.addTool("call", tool);
+	const turn = new AssistantTurn(1);
+	turn.addGroup(group);
+	turn.foldActiveTools({ defaultExpanded: false, restoredExpansion });
+	return { group, tool, turn };
 }
 
-function visibleLines(component: ToolExecutionComponent): string[] {
-	return component
-		.render(120)
-		.map((line) => stripAnsi(line).trimEnd())
+function refresh(fold: Fold): void {
+	fold.turn.foldActiveTools({ defaultExpanded: false });
+}
+
+function render(fold: Fold, width = 120): string {
+	return stripTerminalSequences(fold.group.render(width).join("\n"));
+}
+
+function visibleLines(fold: Fold): string[] {
+	return render(fold)
+		.split("\n")
+		.map((line) => line.trimEnd())
 		.filter((line) => line.trim());
 }
 
-function clickSummary(component: ToolExecutionComponent): void {
-	const lines = component.render(120);
-	const y = lines.findIndex((line) => stripAnsi(line).includes("codemode"));
+function clickSummary(fold: Fold): void {
+	const lines = fold.group.render(120);
+	const y = lines.findIndex((line) => stripTerminalSequences(line).includes("[+]"));
 	const event: TuiMouseEvent = {
 		type: "click",
 		button: "left",
@@ -180,9 +213,5 @@ function clickSummary(component: ToolExecutionComponent): void {
 		ctrl: false,
 		clickCount: 1,
 	};
-	expect(component.handleMouse(event)).toMatchObject({
-		handled: true,
-		preserveViewport: true,
-		target: { component },
-	});
+	expect(fold.group.handleMouse(event)?.handled).toBe(true);
 }

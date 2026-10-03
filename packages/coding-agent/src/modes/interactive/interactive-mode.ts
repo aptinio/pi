@@ -3695,12 +3695,7 @@ export class InteractiveMode {
 					for (const content of this.streamingMessage.content) {
 						if (content.type === "toolCall") {
 							if (!this.pendingTools.has(content.id)) {
-								const component = this.createToolComponent(
-									content.name,
-									content.id,
-									content.arguments,
-									this.streamingMessage.timestamp,
-								);
+								const component = this.createToolComponent(content.name, content.id, content.arguments);
 								component.setExpanded(this.toolOutputExpanded);
 								this.streamingGroup.addTool(content.id, component);
 								this.pendingTools.set(content.id, component);
@@ -3713,7 +3708,10 @@ export class InteractiveMode {
 							}
 						}
 					}
-					if (this.deferredAssistantPrefixFold && this.streamingGroup.rendersWithFoldState()) {
+					if (
+						(this.deferredAssistantPrefixFold && this.streamingGroup.rendersWithFoldState()) ||
+						this.activeAssistantTurn?.hasActiveCodemode()
+					) {
 						this.deferredAssistantPrefixFold = false;
 						this.foldActiveAssistantPrefix();
 					}
@@ -3764,6 +3762,9 @@ export class InteractiveMode {
 						this.maybeShowThinkingDropNotice(this.streamingMessage);
 						this.maybeShowCacheMissNotice(this.streamingMessage);
 					}
+					if (this.activeAssistantTurn?.hasActiveCodemode()) {
+						this.foldActiveAssistantPrefix();
+					}
 					const awaitingToolExecution =
 						this.deferredAssistantPrefixFold &&
 						this.streamingMessage.stopReason !== "aborted" &&
@@ -3791,12 +3792,7 @@ export class InteractiveMode {
 					component = ownerGroup.getTools().find((tool) => tool.getSnapshot().toolCallId === event.toolCallId);
 				}
 				if (!component) {
-					component = this.createToolComponent(
-						event.toolName,
-						event.toolCallId,
-						event.args,
-						ownerGroup?.getMessage().timestamp,
-					);
+					component = this.createToolComponent(event.toolName, event.toolCallId, event.args);
 					component.setExpanded(this.toolOutputExpanded);
 					if (ownerGroup) {
 						ownerGroup.addTool(event.toolCallId, component);
@@ -3814,7 +3810,12 @@ export class InteractiveMode {
 					this.registerToolComponent(ownerEntryId, ownerContentIndex, event.toolCallId, component, true);
 				}
 				component.markExecutionStarted();
-				if (this.deferredAssistantPrefixFold) {
+				if (
+					this.deferredAssistantPrefixFold ||
+					(ownerGroup &&
+						ownerGroup === this.activeAssistantTurn?.getLastGroup() &&
+						this.activeAssistantTurn.hasActiveCodemode())
+				) {
 					this.deferredAssistantPrefixFold = false;
 					this.foldActiveAssistantPrefix();
 				}
@@ -3826,6 +3827,12 @@ export class InteractiveMode {
 				const component = this.pendingTools.get(event.toolCallId);
 				if (component) {
 					component.updateResult({ ...event.partialResult, isError: false }, true);
+					if (
+						this.activeAssistantTurn?.hasActiveCodemode() &&
+						this.activeAssistantTurn.getLastGroup()?.getTools().includes(component)
+					) {
+						this.foldActiveAssistantPrefix();
+					}
 					this.ui.requestRender();
 				}
 				break;
@@ -3837,6 +3844,12 @@ export class InteractiveMode {
 				if (component) {
 					component.updateResult({ ...event.result, isError: event.isError, durationMs: event.durationMs });
 					this.pendingTools.delete(event.toolCallId);
+					if (
+						this.activeAssistantTurn?.hasActiveCodemode() &&
+						this.activeAssistantTurn.getLastGroup()?.getTools().includes(component)
+					) {
+						this.foldActiveAssistantPrefix();
+					}
 					this.ui.requestRender();
 				}
 				this.assistantToolGroups.delete(event.toolCallId);
@@ -4147,11 +4160,12 @@ export class InteractiveMode {
 			measureFoldedHeight && this.transcriptScrollView
 				? this.transcriptScrollView.getContentWidth(this.ui.terminal.columns)
 				: undefined;
-		const changed = turn.foldBeforeLast({
+		const foldOptions = {
 			defaultExpanded: this.toolOutputExpanded,
 			...(restoredExpansion ? { restoredExpansion } : {}),
 			...(heightCompensationWidth ? { heightCompensationWidth } : {}),
-		});
+		};
+		const changed = turn.foldActiveTools(foldOptions) || turn.foldBeforeLast(foldOptions);
 		if (!changed) return;
 		if (!preserveViewport && heightCompensationWidth !== undefined) {
 			this.restoringDeferredAssistantPrefixFoldHeight = false;
@@ -4349,19 +4363,12 @@ export class InteractiveMode {
 		this.assistantToolGroups.clear();
 	}
 
-	private createToolComponent(
-		toolName: string,
-		toolCallId: string,
-		args: unknown,
-		timestamp?: number,
-	): ToolExecutionComponent {
+	private createToolComponent(toolName: string, toolCallId: string, args: unknown): ToolExecutionComponent {
 		return new ToolExecutionComponent(
 			toolName,
 			toolCallId,
 			args,
 			{
-				collapseToSummary: toolName === "codemode",
-				timestamp,
 				showImages: this.settingsManager.getShowImages(),
 				imageWidthCells: this.settingsManager.getImageWidthCells(),
 				outputPad: this.outputPad,
@@ -4427,12 +4434,7 @@ export class InteractiveMode {
 			const group = this.streamingGroup;
 			if (!group) continue;
 			const snapshot = toolState.snapshot;
-			const component = this.createToolComponent(
-				snapshot.toolName,
-				snapshot.toolCallId,
-				snapshot.args,
-				group.getMessage().timestamp,
-			);
+			const component = this.createToolComponent(snapshot.toolName, snapshot.toolCallId, snapshot.args);
 			component.restoreSnapshot(snapshot);
 			group.addTool(toolCallId, component);
 			if (toolState.pending) this.pendingTools.set(toolCallId, component);
@@ -4457,7 +4459,10 @@ export class InteractiveMode {
 		}
 		if (state.deferredAssistantPrefixFold) this.deferredAssistantPrefixFold = true;
 		const replacement = this.activeAssistantTurn?.getLastGroup();
-		if (state.streamingMessage && this.deferredAssistantPrefixFold && replacement?.rendersWithFoldState()) {
+		if (
+			(state.streamingMessage && this.deferredAssistantPrefixFold && replacement?.rendersWithFoldState()) ||
+			this.activeAssistantTurn?.hasActiveCodemode()
+		) {
 			this.deferredAssistantPrefixFold = false;
 			this.foldActiveAssistantPrefix();
 		}
@@ -4662,12 +4667,7 @@ export class InteractiveMode {
 					const wrapper = this.addMessageToChat(item.message, { entryId: item.entryId });
 					if (!(wrapper instanceof AssistantTranscriptGroup)) break;
 					for (const tool of item.tools) {
-						const component = this.createToolComponent(
-							tool.call.name,
-							tool.call.id,
-							tool.call.arguments,
-							item.message.timestamp,
-						);
+						const component = this.createToolComponent(tool.call.name, tool.call.id, tool.call.arguments);
 						this.registerToolComponent(item.entryId, tool.contentIndex, tool.call.id, component);
 						wrapper.addTool(`${tool.contentIndex}:${tool.call.id}`, component);
 						if (tool.resultEntry) component.updateResult(tool.resultEntry.message);
