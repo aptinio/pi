@@ -184,7 +184,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private handleExpansionClick(event: TuiMouseEvent): { handled: true; preserveViewport: true } | undefined {
-		if (!this.result || event.type !== "click" || event.button !== "left") {
+		if ((!this.result && this.toolName !== "codemode") || event.type !== "click" || event.button !== "left") {
 			return undefined;
 		}
 		this.setExpanded(!this.expanded);
@@ -420,7 +420,7 @@ export class ToolExecutionComponent extends Container {
 		}
 		this.imageSpacers = [];
 
-		if (this.result) {
+		if (this.result && (this.toolName !== "codemode" || this.expanded)) {
 			const imageBlocks = this.result.content.filter((c) => c.type === "image");
 			const caps = getCapabilities();
 			for (const img of imageBlocks) {
