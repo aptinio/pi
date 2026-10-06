@@ -20,7 +20,7 @@ To include files or images:
 
 ## Follow Pi's work
 
-Pi shows each tool call and result while it works. Codemode joins the timestamped summary for adjacent tool calls and thinking, including while running. Click the summary in fullscreen mode or press `Ctrl+O` to reveal the script, nested calls, and output. Press `Ctrl+O` to expand or collapse tool output. Press `Ctrl+T` to show or hide thinking blocks.
+Pi shows each tool call and result while it works. Codemode joins the timestamped summary for adjacent tool calls and thinking, including while running. Click the summary in fullscreen mode to show its individual tool rows, then click a codemode row to reveal its full script, nested calls, output, and images, including while running. Press `Ctrl+O` to expand or collapse all tool output. Press `Ctrl+T` to show or hide thinking blocks.
 
 The startup header lists the instructions and resources Pi loaded. The editor border indicates the current thinking level. The footer updates as the model uses context and reports usage.
 

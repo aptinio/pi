@@ -43,15 +43,49 @@ describe("codemode shared activity folding", () => {
 	beforeAll(() => initTheme("dark"));
 	afterEach(() => resetCapabilitiesCache());
 
-	test("starts with one padded shared summary and reveals the complete running script on click", () => {
+	test("keeps the running tool's own expansion independent from its shared summary", () => {
 		const fold = createFold();
 		fold.tool.markExecutionStarted();
 		refresh(fold);
 		expect(visibleLines(fold)).toEqual([" 1:05  [+] 1 tool call, running"]);
 		clickSummary(fold);
 		expect(visibleLines(fold).filter((line) => line.includes("[-]"))).toEqual([" 1:05  [-] 1 tool call, running"]);
+		expect(fold.tool.getExpansionState()).toBe("collapsed");
+		expect(render(fold)).not.toContain('text("script-14");');
+		clickTool(fold);
 		expect(render(fold)).toContain('text("script-14");');
 		expect(render(fold)).not.toContain("[+] codemode");
+	});
+
+	test.each([false, true])("allows a codemode row click before any result, execution started: %s", (running) => {
+		const fold = createFold();
+		if (running) fold.tool.markExecutionStarted();
+		fold.turn.setExpanded(true);
+		fold.tool.setExpanded(false);
+		clickTool(fold);
+		expect(fold.tool.getExpansionState()).toBe("expanded");
+		expect(render(fold)).toContain('text("script-14");');
+	});
+
+	test("preserves the tool row's chosen expansion through refolding and reconstruction", () => {
+		const fold = createFold();
+		fold.tool.updateResult(result);
+		refresh(fold);
+		fold.turn.setExpanded(true);
+		fold.tool.setExpanded(false);
+		refresh(fold);
+		expect(fold.tool.getExpansionState()).toBe("collapsed");
+		clickTool(fold);
+		fold.turn.setExpanded(false);
+		refresh(fold);
+		fold.turn.setExpanded(true);
+		expect(fold.tool.getExpansionState()).toBe("expanded");
+		const restored = createFold();
+		restored.tool.restoreSnapshot(fold.tool.getSnapshot());
+		refresh(restored);
+		restored.turn.setExpanded(true);
+		expect(restored.tool.getExpansionState()).toBe("expanded");
+		expect(render(restored)).toContain('text("script-14");');
 	});
 
 	test("keeps partial and final calls/output hidden, then expands without losing content", () => {
@@ -64,6 +98,8 @@ describe("codemode shared activity folding", () => {
 		refresh(fold);
 		expect(visibleLines(fold)).toEqual([" 1:05  [+] 1 tool call"]);
 		clickSummary(fold);
+		expect(fold.tool.getExpansionState()).toBe("collapsed");
+		clickTool(fold);
 		const expanded = render(fold, 2000);
 		expect(expanded).toContain('text("script-14");');
 		expect(expanded).toContain("nested-0");
@@ -82,10 +118,12 @@ describe("codemode shared activity folding", () => {
 		refresh(fold);
 		expect(visibleLines(fold)).toEqual([" 1:05  [+] 1 tool call, error"]);
 		clickSummary(fold);
+		expect(fold.tool.getExpansionState()).toBe("collapsed");
+		clickTool(fold);
 		expect(render(fold)).toContain("Script error: deliberate failure");
 	});
 
-	test("hides native images until the shared region expands", () => {
+	test("hides native images until both the shared region and the tool row expand", () => {
 		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
 		const fold = createFold();
 		fold.tool.updateResult({
@@ -95,6 +133,8 @@ describe("codemode shared activity folding", () => {
 		refresh(fold);
 		expect(visibleLines(fold)).toEqual([" 1:05  [+] 1 tool call"]);
 		fold.turn.setExpanded(true);
+		expect(fold.group.render(120).join("\n")).not.toContain("fold-image");
+		fold.tool.setExpanded(true);
 		expect(fold.group.render(120).join("\n")).toContain("fold-image");
 	});
 
@@ -116,6 +156,8 @@ describe("codemode shared activity folding", () => {
 		expandedRestore.tool.restoreSnapshot(fold.tool.getSnapshot());
 		refresh(expandedRestore);
 		expect(render(expandedRestore)).toContain(" 1:05  [-] 1 tool call");
+		expect(expandedRestore.tool.getExpansionState()).toBe("collapsed");
+		clickTool(expandedRestore);
 		expect(render(expandedRestore)).toContain("nested-0");
 		expect(render(expandedRestore)).toContain("nested-11");
 	});
@@ -137,6 +179,12 @@ describe("codemode shared activity folding", () => {
 			terminal.sendInput(`\x1b[<0;2;${y + 1}m`);
 			await terminal.waitForRender();
 			expect(terminal.getViewport().join("\n")).toContain(" 1:05  [-] 1 tool call, running");
+			expect(terminal.getViewport().join("\n")).not.toContain('text("script-14");');
+			const toolY = terminal.getViewport().findIndex((line) => line.includes("codemode"));
+			expect(toolY).toBeGreaterThanOrEqual(0);
+			terminal.sendInput(`\x1b[<0;2;${toolY + 1}M`);
+			terminal.sendInput(`\x1b[<0;2;${toolY + 1}m`);
+			await terminal.waitForRender();
 			expect(terminal.getViewport().join("\n")).toContain('text("script-14");');
 		} finally {
 			ui.stop();
@@ -196,9 +244,17 @@ function visibleLines(fold: Fold): string[] {
 		.filter((line) => line.trim());
 }
 
+function clickTool(fold: Fold): void {
+	clickLine(fold, "codemode");
+}
+
 function clickSummary(fold: Fold): void {
+	clickLine(fold, "[+]");
+}
+
+function clickLine(fold: Fold, label: string): void {
 	const lines = fold.group.render(120);
-	const y = lines.findIndex((line) => stripTerminalSequences(line).includes("[+]"));
+	const y = lines.findIndex((line) => stripTerminalSequences(line).includes(label));
 	const event: TuiMouseEvent = {
 		type: "click",
 		button: "left",
