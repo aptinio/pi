@@ -32,7 +32,7 @@ export interface ToolHtmlRenderer {
 		result: Array<{ type: string; text?: string; data?: string; mimeType?: string }>,
 		details: unknown,
 		isError: boolean,
-	): { collapsed?: string; expanded?: string } | undefined;
+	): { callHtml?: string; collapsed?: string; expanded?: string } | undefined;
 }
 
 /**
@@ -126,10 +126,11 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 			result: Array<{ type: string; text?: string; data?: string; mimeType?: string }>,
 			details: unknown,
 			isError: boolean,
-		): { collapsed?: string; expanded?: string } | undefined {
+		): { callHtml?: string; collapsed?: string; expanded?: string } | undefined {
 			try {
 				const toolDef = getToolRenderers(toolName);
-				if (!toolDef?.renderResult) {
+				const renderResult = toolDef?.renderResult;
+				if (!toolDef || !renderResult) {
 					return undefined;
 				}
 
@@ -141,27 +142,33 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 					isError,
 				};
 
-				// Render collapsed
-				const collapsedComponent = toolDef.renderResult(
-					agentToolResult,
-					{ expanded: false, isPartial: false },
-					theme,
-					createRenderContext(toolCallId, renderedResultComponents.get(toolCallId), false, false, isError),
-				);
-				renderedResultComponents.set(toolCallId, collapsedComponent);
-				const collapsed = ansiLinesToHtml(trimRenderedResultLines(collapsedComponent.render(width)));
-
-				// Render expanded
-				const expandedComponent = toolDef.renderResult(
-					agentToolResult,
-					{ expanded: true, isPartial: false },
-					theme,
-					createRenderContext(toolCallId, renderedResultComponents.get(toolCallId), true, false, isError),
-				);
-				renderedResultComponents.set(toolCallId, expandedComponent);
-				const expanded = ansiLinesToHtml(trimRenderedResultLines(expandedComponent.render(width)));
+				const renderView = (expanded: boolean): string => {
+					let call: Component | undefined;
+					if (toolDef.renderShell === "self" && toolDef.renderCall) {
+						call = toolDef.renderCall(
+							renderedArgs.get(toolCallId),
+							theme,
+							createRenderContext(toolCallId, renderedCallComponents.get(toolCallId), expanded, false, isError),
+						);
+						renderedCallComponents.set(toolCallId, call);
+					}
+					const component = renderResult(
+						agentToolResult,
+						{ expanded, isPartial: false },
+						theme,
+						createRenderContext(toolCallId, renderedResultComponents.get(toolCallId), expanded, false, isError),
+					);
+					renderedResultComponents.set(toolCallId, component);
+					// Self-framed renderers may place the result in their call slot, as the TUI does.
+					const lines = call ? [...call.render(width), ...component.render(width)] : component.render(width);
+					return ansiLinesToHtml(trimRenderedResultLines(lines));
+				};
+				const collapsed = renderView(false);
+				const expanded = renderView(true);
 
 				return {
+					// The composed result owns the call row; discard the stale pre-result header.
+					...(toolDef.renderShell === "self" ? { callHtml: "" } : {}),
 					...(collapsed && collapsed !== expanded ? { collapsed } : {}),
 					expanded,
 				};

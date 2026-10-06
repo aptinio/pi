@@ -22,7 +22,7 @@ export interface ToolHtmlRenderer {
 		result: Array<{ type: string; text?: string; data?: string; mimeType?: string }>,
 		details: unknown,
 		isError: boolean,
-	): { collapsed?: string; expanded?: string } | undefined;
+	): { callHtml?: string; collapsed?: string; expanded?: string } | undefined;
 }
 
 /** Pre-rendered HTML for a custom tool call and result */
@@ -218,6 +218,7 @@ function preRenderCustomTools(
 				if (rendered) {
 					renderedTools[msg.toolCallId] = {
 						...existing,
+						callHtml: rendered.callHtml ?? existing?.callHtml,
 						resultHtmlCollapsed: rendered.collapsed,
 						resultHtmlExpanded: rendered.expanded,
 					};
