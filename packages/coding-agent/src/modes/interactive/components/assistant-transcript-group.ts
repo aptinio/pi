@@ -159,8 +159,6 @@ export class AssistantTranscriptGroup extends TranscriptEntryComponent {
 			const assignment = this.toolFoldAssignments.get(key);
 			if (assignment?.showSummary) this.addChild(assignment.region.getSummaryComponent());
 			if (!assignment || assignment.region.isExpanded()) {
-				// Codemode's shared region reveals its full script and result, not a second preview fold.
-				if (assignment && tool.getSnapshot().toolName === "codemode") tool.setExpanded(true);
 				this.addChild(tool);
 			}
 		}
