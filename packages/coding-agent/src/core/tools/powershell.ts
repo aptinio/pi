@@ -10,6 +10,7 @@ import {
 	type createBashTool,
 	createLocalShellOperations,
 	createShellToolDefinition,
+	describeSessionEnvironment,
 	type ShellToolConfig,
 } from "./bash.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -26,7 +27,7 @@ const WINDOWS_POWERSHELL_EXIT_SUFFIX =
 
 export const powershellToolSystemPromptContribution = {
 	snippet: "Execute PowerShell commands",
-	guidelines: ["You can inspect PI_* environment variables for current model and session details."],
+	guidelines: [describeSessionEnvironment("$env:PI_MODEL")],
 } as const;
 
 export type PowerShellOperations = BashOperations;
