@@ -5,6 +5,7 @@ import { getModel } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { bashToolSystemPromptContribution } from "../src/core/tools/bash.ts";
 
 describe("createAgentSession session manager defaults", () => {
 	let tempDir: string;
@@ -104,9 +105,7 @@ describe("createAgentSession session manager defaults", () => {
 			thinkingLevel: "high",
 		});
 		expect(session.sessionFile).toBeTruthy();
-		expect(session.systemPrompt).toContain(
-			"You can inspect PI_* environment variables for current model and session details.",
-		);
+		expect(session.systemPrompt).toContain(bashToolSystemPromptContribution.guidelines[0]);
 
 		const bashTool = session.agent.state.tools.find((tool) => tool.name === "bash");
 		expect(bashTool).toBeTruthy();
