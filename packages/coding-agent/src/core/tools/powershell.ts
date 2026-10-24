@@ -9,6 +9,7 @@ import {
 	type createBashTool,
 	createLocalShellOperations,
 	createShellToolDefinition,
+	describeSessionEnvironment,
 	type ShellToolConfig,
 } from "./bash.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -17,7 +18,7 @@ const UTF8_OUTPUT_PREFIX = "try { [Console]::OutputEncoding=[System.Text.Encodin
 
 export const powershellToolSystemPromptContribution = {
 	snippet: "Execute PowerShell commands",
-	guidelines: ["You can inspect PI_* environment variables for current model and session details."],
+	guidelines: [describeSessionEnvironment("$env:PI_MODEL")],
 } as const;
 
 export type PowerShellOperations = BashOperations;
