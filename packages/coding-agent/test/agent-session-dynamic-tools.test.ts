@@ -9,7 +9,7 @@ import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { createBashTool } from "../src/core/tools/bash.ts";
+import { bashToolSystemPromptContribution, createBashTool, SESSION_ENVIRONMENT_NAMES } from "../src/core/tools/bash.ts";
 import { withBuiltInRenderers } from "../src/core/tools/renderers/index.ts";
 import type { ToolRenderContext, ToolRenderers } from "../src/index.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
@@ -79,9 +79,7 @@ describe("AgentSession dynamic tool registration", () => {
 		});
 
 		const bashTool = session.agent.state.tools.find((tool) => tool.name === "bash")!;
-		expect(session.systemPrompt).toContain(
-			"You can inspect PI_* environment variables for current model and session details.",
-		);
+		expect(session.systemPrompt).toContain(bashToolSystemPromptContribution.guidelines[0]);
 		await bashTool.execute("bash-env", { command: "printf ok" });
 		expect(sessionEnv).toMatchObject({
 			PI_SESSION_ID: session.sessionId,
@@ -98,6 +96,10 @@ describe("AgentSession dynamic tool registration", () => {
 		expect(optedOutEnv).not.toHaveProperty("PI_PROVIDER");
 		expect(optedOutEnv).not.toHaveProperty("PI_MODEL");
 		expect(optedOutEnv).not.toHaveProperty("PI_REASONING_LEVEL");
+
+		// The prompt guideline is built from SESSION_ENVIRONMENT_NAMES, so it must name exactly what commands receive.
+		const injected = Object.keys(sessionEnv!).filter((name) => sessionEnv![name] !== optedOutEnv![name]);
+		expect(injected.sort()).toEqual([...SESSION_ENVIRONMENT_NAMES].sort());
 
 		session.dispose();
 	});

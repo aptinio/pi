@@ -42,9 +42,24 @@ const bashSchema = Type.Object({
 	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
 });
 
+/** Session metadata injected into shell tools. The prompt guideline names exactly these variables. */
+export const SESSION_ENVIRONMENT_NAMES = [
+	"PI_SESSION_ID",
+	"PI_SESSION_FILE",
+	"PI_PROVIDER",
+	"PI_MODEL",
+	"PI_REASONING_LEVEL",
+] as const;
+
+type SessionEnvironment = Partial<Record<(typeof SESSION_ENVIRONMENT_NAMES)[number], string>>;
+
+export function describeSessionEnvironment(readExample: string): string {
+	return `Current model and session details are in ${SESSION_ENVIRONMENT_NAMES.join(", ")}. Read them by name (\`${readExample}\`); never list or search the environment, which can print secrets.`;
+}
+
 export const bashToolSystemPromptContribution = {
 	snippet: "Execute bash commands (ls, grep, find, etc.)",
-	guidelines: ["You can inspect PI_* environment variables for current model and session details."],
+	guidelines: [describeSessionEnvironment("printenv PI_MODEL")],
 } as const;
 
 export type BashToolInput = Static<typeof bashSchema>;
@@ -191,24 +206,24 @@ function resolveSpawnContext(
 	ctx: ExtensionContext | undefined,
 ): BashSpawnContext {
 	const env = { ...getShellEnv() };
-	delete env.PI_SESSION_ID;
-	delete env.PI_SESSION_FILE;
-	delete env.PI_PROVIDER;
-	delete env.PI_MODEL;
-	delete env.PI_REASONING_LEVEL;
+	for (const name of SESSION_ENVIRONMENT_NAMES) delete env[name];
 	if (exposeSessionEnvironment && ctx) {
-		const model = ctx.model;
-		env.PI_SESSION_ID = ctx.sessionManager.getSessionId();
-		const sessionFile = ctx.sessionManager.getSessionFile();
-		if (sessionFile) env.PI_SESSION_FILE = sessionFile;
-		if (model) {
-			env.PI_PROVIDER = model.provider;
-			env.PI_MODEL = model.id;
+		for (const [name, value] of Object.entries(sessionEnvironment(ctx))) {
+			if (value) env[name] = value;
 		}
-		if (ctx.thinkingLevel) env.PI_REASONING_LEVEL = ctx.thinkingLevel;
 	}
 	const baseContext: BashSpawnContext = { command, cwd, env };
 	return spawnHook ? spawnHook(baseContext) : baseContext;
+}
+
+function sessionEnvironment(ctx: ExtensionContext): SessionEnvironment {
+	return {
+		PI_SESSION_ID: ctx.sessionManager.getSessionId(),
+		PI_SESSION_FILE: ctx.sessionManager.getSessionFile(),
+		PI_PROVIDER: ctx.model?.provider,
+		PI_MODEL: ctx.model?.id,
+		PI_REASONING_LEVEL: ctx.thinkingLevel,
+	};
 }
 
 export interface BashToolOptions {
