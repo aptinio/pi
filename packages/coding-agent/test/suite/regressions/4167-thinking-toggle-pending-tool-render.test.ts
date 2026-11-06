@@ -280,7 +280,7 @@ describe("InteractiveMode.renderSessionEntries", () => {
 		initTheme("dark");
 	});
 
-	test("restores semantic assistant text without marking thinking or tool rows", () => {
+	test("restores the waiting reply as semantic text without marking commentary, thinking or tool rows", () => {
 		const fakeThis = createFakeInteractiveModeThis();
 		const addMessageToChat = (InteractiveMode.prototype as unknown as { addMessageToChat: AddMessageToChat })
 			.addMessageToChat;
@@ -289,17 +289,29 @@ describe("InteractiveMode.renderSessionEntries", () => {
 			InteractiveMode.prototype as unknown as { renderSessionEntries: RenderSessionEntries }
 		).renderSessionEntries;
 
-		renderSessionEntries.call(fakeThis, createSessionEntries([createAssistantTextAndToolCallMessage()]), {
-			collapseCompletedActivity: true,
-		});
+		const reply: AssistantMessage = {
+			...createAssistantToolCallMessage(),
+			content: [{ type: "text", text: "WAITING_REPLY" }],
+			stopReason: "stop",
+		};
+		renderSessionEntries.call(
+			fakeThis,
+			createSessionEntries([createAssistantTextAndToolCallMessage(), createToolResultMessage("RESULT"), reply]),
+			{ collapseCompletedActivity: true },
+		);
 		expandAssistantTurns(fakeThis);
 
 		const lines = fakeThis.chatContainer.render(120);
 		const commentary = lines.find((line) => stripAnsi(line).includes("VISIBLE_COMMENTARY"));
 		const thinking = lines.find((line) => stripAnsi(line).includes("PRIVATE_REASONING"));
 		const tool = lines.find((line) => stripAnsi(line).includes(TOOL_NAME));
-		expect(commentary).toContain(OSC133_ZONE_START);
-		expect(commentary).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
+		const waitingReply = lines.find((line) => stripAnsi(line).includes("WAITING_REPLY"));
+		expect(waitingReply).toContain(OSC133_ZONE_START);
+		expect(waitingReply).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
+		expect(commentary).toBeDefined();
+		expect(commentary).not.toContain(OSC133_ZONE_START);
+		expect(commentary).not.toContain(OSC133_ZONE_END);
+		expect(commentary).not.toContain(OSC133_ZONE_FINAL);
 		expect(thinking).toBeDefined();
 		expect(thinking).not.toContain(OSC133_ZONE_START);
 		expect(thinking).not.toContain(OSC133_ZONE_END);
