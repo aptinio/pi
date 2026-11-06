@@ -18,7 +18,8 @@ const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;
 
-// Each visible answer segment is one selectable range. The parent appends C to the last range that renders.
+// Each visible segment of a reply that waits for the user is one selectable range. The parent appends C to the last
+// range that renders.
 class SemanticPromptSegment extends Container {
 	constructor(content: Component) {
 		super();
@@ -218,8 +219,11 @@ export class AssistantMessageComponent extends Container {
 			this.contentContainer.addChild(child);
 		};
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall");
+		// Narration before tool use is not a navigation stop, and a streaming reply's stop reason is not final yet.
+		const waitsForUser = !isStreaming && message.stopReason !== "toolUse";
+		const semantic = (content: Component): Component => (waitsForUser ? new SemanticPromptSegment(content) : content);
 		const addAssistantContent = (content: Component) => {
-			this.contentContainer.addChild(new SemanticPromptSegment(content));
+			this.contentContainer.addChild(semantic(content));
 		};
 
 		// Render content in order
@@ -230,7 +234,7 @@ export class AssistantMessageComponent extends Container {
 				// Set paddingY=0 to avoid extra spacing before tool executions
 				const text = formatTextWithCitations(content);
 				addVisibleChild(
-					new SemanticPromptSegment(
+					semantic(
 						markdownBlock(
 							"text",
 							text,

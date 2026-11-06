@@ -144,16 +144,19 @@ describe("AssistantMessageComponent", () => {
 		expect(stripAnsi(lines.join("\n"))).not.toContain("removed answer");
 	});
 
-	test("groups visible assistant text ranges in tool-bearing messages", () => {
+	test("groups visible assistant text ranges in a tool-bearing message that ends the turn", () => {
 		initTheme("dark");
 
 		const component = new AssistantMessageComponent(
-			createAssistantMessage([
-				{ type: "text", text: "before tool" },
-				{ type: "toolCall", id: "tool-1", name: "read", arguments: { path: "file.txt" } },
-				{ type: "thinking", thinking: "private reasoning" },
-				{ type: "text", text: "after tool" },
-			]),
+			createAssistantMessage(
+				[
+					{ type: "text", text: "before tool" },
+					{ type: "toolCall", id: "tool-1", name: "read", arguments: { path: "file.txt" } },
+					{ type: "thinking", thinking: "private reasoning" },
+					{ type: "text", text: "after tool" },
+				],
+				{ stopReason: "aborted" },
+			),
 		);
 		const lines = component.render(60);
 		const beforeTool = lines.find((line) => stripAnsi(line).includes("before tool"));
@@ -172,21 +175,35 @@ describe("AssistantMessageComponent", () => {
 		expect(afterTool).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
 	});
 
-	test("keeps assistant text marked when a streaming message gains a tool call", () => {
+	test("does not mark assistant text that continues with tool use", () => {
+		initTheme("dark");
+
+		const component = new AssistantMessageComponent(
+			createAssistantMessage(
+				[
+					{ type: "text", text: "I need to do this." },
+					{ type: "toolCall", id: "tool-1", name: "read", arguments: { path: "file.txt" } },
+				],
+				{ stopReason: "toolUse" },
+			),
+		);
+		const rendered = component.render(60).join("\n");
+
+		expect(stripAnsi(rendered)).toContain("I need to do this.");
+		expect(rendered).not.toContain(OSC133_ZONE_START);
+		expect(rendered).not.toContain(OSC133_ZONE_END);
+		expect(rendered).not.toContain(OSC133_ZONE_FINAL);
+	});
+
+	test("marks a reply that waits for the user only once it finishes streaming", () => {
 		initTheme("dark");
 		const component = new AssistantMessageComponent();
-		const textContent = { type: "text" as const, text: "calling tool" };
+		const message = createAssistantMessage([{ type: "text", text: "here's what happened" }]);
 
-		component.updateContent(createAssistantMessage([textContent]), true);
-		expect(component.render(60).join("\n")).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
+		component.updateContent(message, true);
+		expect(component.render(60).join("\n")).not.toContain(OSC133_ZONE_START);
 
-		component.updateContent(
-			createAssistantMessage([
-				textContent,
-				{ type: "toolCall", id: "tool-1", name: "read", arguments: { path: "file.txt" } },
-			]),
-			true,
-		);
+		component.updateContent(message, false);
 		expect(component.render(60).join("\n")).toContain(OSC133_ZONE_END + OSC133_ZONE_FINAL);
 	});
 
